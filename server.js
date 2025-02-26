@@ -18,7 +18,7 @@ app.get('/fetch-orders', async (req, res) => {
     try {
         const processedOrderIds = await getProcessedOrderIds();
         const orders = await fetchOrders();
-        const ddtNumber = await getDDTNumber();
+        let ddtNumber = await getDDTNumber();
         for (const order of orders) {
             if (processedOrderIds.includes(order.id.toString())) {
                 continue;
@@ -63,7 +63,7 @@ function mapShippingMethod(apiResponse) {
         const shippingMethod = new ShippingMethod({
             id: apiResponse.order_shipping_method.id,
             name: apiResponse.order_shipping_method.name,
-            price: apiResponse.order_shipping_method.price.cents
+            price: apiResponse.order_shipping_method.price ? apiResponse.order_shipping_method.price.cents : 0
         })
 
         return shippingMethod;
@@ -72,8 +72,12 @@ function mapShippingMethod(apiResponse) {
 }
 
 async function getProcessedOrderIds() {
+    const filePath = 'C:\\Users\\Francesco\\Desktop\\jigglycard-ddt-generator\\processed_orders.txt';
+
     try {
-        const data = await fs.readFile(processedOrdersFile, 'utf8');
+        // Ensure the file exists; if not, create an empty file to avoid errors
+        await fs.ensureFile(filePath);
+        const data = await fs.readFile(filePath, 'utf8');
         return data.split('\n').filter(id => id.trim() !== '');
     } catch (error) {
         console.error('Error reading processed orders file:', error);
@@ -91,6 +95,7 @@ async function logProcessedOrderId(orderId) {
 
 function mapShippingItems(apiResponse) {
     const allShippingItems = [];
+    //to do rimuovere righe non spedite
     for (let item of apiResponse.order_items) {
         const shippingItem = new ShippingItem({
             name: item.name,
@@ -137,12 +142,16 @@ async function fetchOrders() {
     let page = 1;
     const limit = 100;
 
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const formattedDate = thirtyDaysAgo.toISOString().split('T')[0];
+
     while (true) {
         const config = {
             headers: headerRequest,
             params: {
                 sort: 'date.desc',
-                from: '2025-01-01',
+                from: formattedDate,
                 page: page,
                 limit: limit
             }
@@ -226,7 +235,7 @@ async function generateExcel(ddtNumber, docAddress, shippingItems, shippingMetho
         }
         worksheet.getCell(`A${currentRow}`).value = item.quantity;
         worksheet.getCell(`B${currentRow}`).value = `${item.name} ${item.collectionNumber}`;
-        worksheet.getCell(`H${currentRow}`).value = item.price / 100;
+        worksheet.getCell(`H${currentRow}`).value = item.price / 100 * item.quantity;
         currentRow++;
     }
 
