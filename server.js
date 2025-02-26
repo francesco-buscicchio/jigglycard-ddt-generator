@@ -72,10 +72,10 @@ function mapShippingMethod(apiResponse) {
 }
 
 async function getProcessedOrderIds() {
+    //to do rendere dinamico questo path
     const filePath = 'C:\\Users\\Francesco\\Desktop\\jigglycard-ddt-generator\\processed_orders.txt';
 
     try {
-        // Ensure the file exists; if not, create an empty file to avoid errors
         await fs.ensureFile(filePath);
         const data = await fs.readFile(filePath, 'utf8');
         return data.split('\n').filter(id => id.trim() !== '');
@@ -231,7 +231,7 @@ async function generateExcel(ddtNumber, docAddress, shippingItems, shippingMetho
             pageItem++;
             worksheet = cloneTemplate(workbook.getWorksheet(1), `Foglio${pageItem}`);
             setCustomerDetails(worksheet, docAddress, ddtNumber);
-            currentRow = 19; // Reset row count for new sheet
+            currentRow = 19;
         }
         worksheet.getCell(`A${currentRow}`).value = item.quantity;
         worksheet.getCell(`B${currentRow}`).value = `${item.name} ${item.collectionNumber}`;
