@@ -5,5 +5,7 @@ module.exports = {
     CARDTRADER_TOKEN: process.env.CARDTRADER_TOKEN,
     PROCESSED_ORDERS_FILE: 'processed_orders.txt',
     DDT_NUMBER_FILE: 'ddt_number.txt',
-    TEMPLATE_FILE: './templates/template.xlsx'
+    TEMPLATE_FILE: './template.xlsx',
+    CARDMARKET_DIR: 'cardmarket-file'
 };
+
