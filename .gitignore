@@ -1,3 +1,6 @@
 node_modules
 .env
 /cardmarket-file
+/excel_export
+.DS_Store
+processed_orders.txt
