@@ -24,7 +24,7 @@ exports.fetchOrders = async () => {
     orders = orders.concat(data);
     page++;
   }
-  return orders.filter((o) => o.state !== "hub_pending");
+  return orders.filter((o) => o.state === "paid");
 };
 
 exports.fetchOrderDetails = async (orderId) => {

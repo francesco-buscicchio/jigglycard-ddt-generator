@@ -16,6 +16,8 @@
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "fs-extra": "^11.3.0",
+    "googleapis": "^150.0.1",
+    "mime-types": "^3.0.1",
     "node-fetch": "^3.3.2"
   }
 }

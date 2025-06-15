@@ -4,3 +4,4 @@ node_modules
 /excel_export
 .DS_Store
 processed_orders.txt
+service-account.json

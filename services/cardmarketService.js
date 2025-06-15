@@ -23,7 +23,11 @@ exports.processOrdersFromCSV = async () => {
   const processedOrderIds = await fileService.getProcessedOrderIds();
 
   for (const order of ordersData) {
-    if (order.status.trim().toLowerCase() !== "paid") continue;
+    if (
+      order.status.trim().toLowerCase() !== "paid" &&
+      order.status.trim().toLowerCase() !== "sent"
+    )
+      continue;
     const datePaid = new Date(order.datePaid);
     if (
       isNaN(datePaid.getTime()) ||

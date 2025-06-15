@@ -66,7 +66,7 @@ function mapShippingItems(apiResponse) {
     const shippingItem = new ShippingItem({
       name: item.name,
       collectionNumber: item.properties.collector_number,
-      price: item.seller_price.cents,
+      price: item.seller_price ? item.seller_price.cents : 0,
       quantity: item.quantity,
     });
     allShippingItems.push(shippingItem);
