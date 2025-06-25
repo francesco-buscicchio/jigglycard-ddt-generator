@@ -2,12 +2,22 @@ const driveHelper = require("../helper/drive");
 
 exports.getDDTList = async (req, res) => {
   try {
-    const result = await driveHelper.getDDTList(false);
-    res.status(200).send(result);
-  } catch (error) {
-    res.status(500).send("An error occurred while getting DDT List.");
+    console.log("Test route /ddt-list chiamata");
+    res.json({ ok: true, message: "Funziona!" });
+  } catch (err) {
+    console.error("Errore in test:", err);
+    res.status(500).json({ error: "Errore interno" });
   }
 };
+
+// exports.getDDTList = async (req, res) => {
+//   try {
+//     const result = await driveHelper.getDDTList(false);
+//     res.status(200).send(result);
+//   } catch (error) {
+//     res.status(500).send("An error occurred while getting DDT List.");
+//   }
+// };
 
 exports.downloadFileByName = async (req, res) => {
   const rawName = req.query.name;
