@@ -67,28 +67,26 @@ async function getOrCreateSubfolder(parentFolderId, folderName) {
   return createRes.data.id;
 }
 
-exports.getNextDDTNumber = async () => {
-  const year = new Date().getFullYear(); // es. 2025
-  const rootId = process.env.DDT_ROOT_FOLDER_ID;
-  const yearFolderName = `DDT ${year}`;
-
-  // 1️⃣ Cerca la sottocartella "DDT YYYY"
+async function getFilesInFolder(
+  parentFolderID,
+  folderName,
+  fileType = "pdf",
+  mapFile = true
+) {
   const folderRes = await drive.files.list({
     q:
-      `'${rootId}' in parents and name = '${yearFolderName}' ` +
+      `'${parentFolderID}' in parents and name = '${folderName}' ` +
       `and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
     fields: "files(id)",
     pageSize: 1,
   });
 
   if (folderRes.data.files.length === 0) {
-    // Nessun DDT per quest'anno → primo numero sarà 1
     return 1;
   }
 
   const folderId = folderRes.data.files[0].id;
 
-  // 2️⃣ Elenca i file nella cartella annuale
   const filesRes = await drive.files.list({
     q:
       `'${folderId}' in parents and trashed = false ` +
@@ -97,20 +95,55 @@ exports.getNextDDTNumber = async () => {
     pageSize: 1000,
   });
 
-  // 3️⃣ Estrai i numeri già usati
-  const numbers = filesRes.data.files
-    .map((f) => {
-      const m = f.name.match(/^\d{4}-(\d+)\.pdf$/);
-      return m ? parseInt(m[1], 10) : null;
-    })
-    .filter(Boolean) // rimuovi null
-    .sort((a, b) => a - b);
+  if (mapFile)
+    return filesRes.data.files
+      .map((f) => {
+        const safeType = fileType.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); // opzionale se proviene da input esterno
 
-  // 4️⃣ Trova il primo “buco” o max+1
+        const re = new RegExp(
+          `^\\d{4}-(\\d+)(?:\\s*-\\s*[^.]+)?\\.${safeType}$`
+        );
+
+        const m = f.name.match(re);
+        return m ? parseInt(m[1], 10) : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a - b);
+  else return filesRes.data.files;
+}
+
+exports.getDDTList = async (mapFile = true) => {
+  const year = new Date().getFullYear(); // es. 2025
+  const rootId = process.env.DDT_ROOT_FOLDER_ID;
+  const rootDocumentsFolder = process.env.ROOT_DDT_ID;
+  const yearFolderName = `DDT ${year}`;
+
+  const files = await getFilesInFolder(
+    rootId,
+    yearFolderName,
+    undefined,
+    mapFile
+  );
+  const filesTemp = await getFilesInFolder(
+    rootDocumentsFolder,
+    "DDT TEMP",
+    "xlsx",
+    mapFile
+  );
+
+  const numbers = [...new Set(files.concat(filesTemp).filter(Boolean))];
+  numbers.sort((a, b) => a - b);
+
+  return numbers;
+};
+
+exports.getNextDDTNumber = async () => {
+  const numbers = await getDDTList();
+
   let next = 1;
   for (let i = 0; i < numbers.length; i++) {
     if (numbers[i] !== i + 1) {
-      next = i + 1; // primo numero mancante
+      next = i + 1;
       break;
     }
   }
@@ -119,7 +152,7 @@ exports.getNextDDTNumber = async () => {
     numbers.length &&
     numbers[numbers.length - 1] === numbers.length
   ) {
-    next = numbers.length + 1; // nessun buco trovato
+    next = numbers.length + 1;
   }
 
   return next;
@@ -139,47 +172,6 @@ async function downloadText(fileId) {
       .on("end", () => resolve(data))
       .on("error", reject);
   });
-}
-
-/** Aggiorna (sovrascrive) un file testo con `content` */
-function uploadText(fileId, content) {
-  return drive.files.update({
-    // :contentReference[oaicite:1]{index=1}
-    fileId,
-    media: {
-      mimeType: "text/plain",
-      body: Readable.from([content]),
-    },
-  });
-}
-
-/** Trova (o crea) il file processed_orders.txt e torna il suo ID */
-async function getOrCreateProcessedFile() {
-  // 1. cerco nella cartella DDT
-  const res = await drive.files.list({
-    q:
-      `'${ROOT_DDT_ID}' in parents and name='${PROCESSED_FILE_NAME}' ` +
-      `and mimeType='text/plain' and trashed=false`,
-    fields: "files(id)",
-    pageSize: 1,
-  });
-
-  if (res.data.files.length) {
-    return res.data.files[0].id;
-  }
-
-  // 2. se non c'è, lo creo vuoto
-  const create = await drive.files.create({
-    requestBody: {
-      name: PROCESSED_FILE_NAME,
-      mimeType: "text/plain",
-      parents: [ROOT_DDT_ID],
-    },
-    media: { mimeType: "text/plain", body: "" }, // uploadType=media :contentReference[oaicite:2]{index=2}
-    fields: "id",
-  });
-
-  return create.data.id;
 }
 
 exports.downloadText = async (fileId) => {
@@ -231,4 +223,48 @@ exports.getOrCreateProcessedFile = async (fileId, content) => {
   });
 
   return create.data.id;
+};
+
+exports.downloadFileByName = async (fileName) => {
+  const year = new Date().getFullYear(); // es. 2025
+  const yearFolderName = `DDT ${year}`;
+
+  const rootId = process.env.DDT_ROOT_FOLDER_ID;
+  const rootTemp = process.env.ROOT_DDT_ID;
+
+  const findFileInFolder = async (parentId, folderName) => {
+    const folderRes = await drive.files.list({
+      q: `'${parentId}' in parents and name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: "files(id)",
+      pageSize: 1,
+    });
+
+    if (!folderRes.data.files.length) return null;
+    const folderId = folderRes.data.files[0].id;
+
+    const fileRes = await drive.files.list({
+      q: `'${folderId}' in parents and name = '${fileName}' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+      fields: "files(id, mimeType, name)",
+      pageSize: 1,
+    });
+
+    return fileRes.data.files[0] || null;
+  };
+
+  const file =
+    (await findFileInFolder(rootId, yearFolderName)) ||
+    (await findFileInFolder(rootTemp, "DDT TEMP"));
+
+  if (!file) return null;
+
+  const res = await drive.files.get(
+    { fileId: file.id, alt: "media" },
+    { responseType: "stream" }
+  );
+
+  return {
+    stream: res.data,
+    mimeType: file.mimeType,
+    name: file.name,
+  };
 };

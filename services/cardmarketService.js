@@ -79,7 +79,7 @@ exports.processOrdersFromCSV = async () => {
       shippingMethod
     );
     await fileService.logProcessedOrderId(orderId);
-    ddtNumber++;
+    ddtNumber = await fileService.getDDTNumber();
   }
 
   await fileService.updateDDTNumber(ddtNumber);

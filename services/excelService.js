@@ -11,6 +11,13 @@ exports.generateExcel = async (
   const workbook = new Excel.Workbook();
   await workbook.xlsx.readFile(TEMPLATE_FILE);
   let sheet = workbook.getWorksheet(1);
+  sheet.pageSetup = {
+    paperSize: 9,
+    orientation: "portrait",
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+  };
   removeColumn(sheet, 11);
 
   setCustomerDetails(sheet, docAddress, ddtNumber);
@@ -43,7 +50,9 @@ exports.generateExcel = async (
     row++;
   });
 
-  const fileName = `${new Date().getFullYear()}-${ddtNumber}.xlsx`;
+  const fileName = `${new Date().getFullYear()}-${ddtNumber} - ${
+    docAddress.name
+  }.xlsx`;
   const filePath = `${EXPORT_FOLDER}/${fileName}`;
   await workbook.xlsx.writeFile(filePath);
 
