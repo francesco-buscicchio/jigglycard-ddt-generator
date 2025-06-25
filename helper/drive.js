@@ -3,10 +3,22 @@ const { google } = require("googleapis");
 const mime = require("mime-types");
 const { Readable } = require("stream");
 
-const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
-
 const auth = new google.auth.GoogleAuth({
-  credentials,
+  credentials: {
+    type: "service_account",
+    project_id: "ddt-generation",
+    private_key_id: "a2d9c36287fe3f92a1495b5cbbbf5ddfb2baee9d",
+    private_key:
+      "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDKl17pC17p3nbH\nx5BGlJEw59C7PXML3BIukQ5vV6bTj7K1Ellz+NYJzskObt4esaGoSBgOw7R11C/b\nSyIwCcIZXv7jFXdzW4E6KHLJAZIJHqIbnAKQLTFaPuIsI/QoYLKQjD6Y8/prmWMz\nEU3utZR0Kz16ItTjIVcRfpXkt54dTDErGBxoRkVW2sHz6JFhJrBUcD5NgBGggHKf\n7PsVXqrV83nXIkeDZtzwBfH4YPpXGqrq6AJovgyu5W0tWtC5Tl/B14fiVa6WdPsC\nNmDA7vWEAj2tbkQNrgwWnRFUoqcVZ/DaTvA08YSvXYljPlS9F25exfCrTahISfZ8\nVtlB4jsDAgMBAAECggEAASsiVwHDyGGKGdji0iVlOPz9TTcrhLP+PtqDVM0Sn0HC\n7Bxw+6RBx8izjCvDiDXKEuhnix5B2jQhGoiyZ8iGoBLWMYUcLUQn2KgHEXW62+ab\nVMFvmllIYZbfQxXqAJmeLgtBCSzPEvPNiKve4TOW6ZyePCgbRjwY/nbWcn1EojKd\nqfkRkVQ/XLlNQwp78MnoY2Qe2avNvRvL2Z0Z53dHd59jq7FEiVjYu/xfsaJNdMho\nFKrz0VYzVMjwsKy5RGwBQh2qRCTrB5xeduwN0wWt93dMgBUKlawDRoR75TY2iVoz\nDX9GIgUUcvRTmBvxLD4BhFaTYQ19kR3CQJNA2N1cgQKBgQD8HOrxwOGQ82ah/eL1\nS6tSti6lo6l/V1nBk8ahE+aeNWXxBGQEOtyeLGfWS4BAXwYEwMrCoc/RjsN4o2Dy\nzSd6f2SF+ThaNuVKH5xQM+LdkOypib6gqgfPsfrDwZUYEPV+dZupD/uwuQSkPv+6\nytvRiAdRAX1/xnJtEyZbwiGUIwKBgQDNtv4SAOpU6nQicBlDLfcur4UoYZtfjTDg\n2r5hv6bTIKZk36cU0GhT30/DoLCUqZzeU2dq7NgbTgByxJ3M5ISSjaz9+evFyvlK\nbGjMGOV/eFKNyT7DagRou3wY9IDchKA5tb+4C8IKHnT3zzmrbgxeTIXtHxDBJ4wc\n0yzRZeA7oQKBgQCVp7jTjzKW79VxvZsXDzcA30Jrcu5vt/OA1G7pOT4BliMQYhHY\n7PP/NM7ix2i3TXDuK19xD8qkU8G3AAzRtHSF489RM/J+ou2TBZatiU9XROsnbKvr\nBWOjp7v6rhQJ+C8yRTAEuIcojXuy3+6//CFmjQAC1wafbbaJBwATIfb6zwKBgQCv\nr1J4ybNW5gxcxOOuTflGM7xC6mkpR4mw3t+s12J/+OhiSeeFjR8sUhDq/7cOn3RL\nI2u1E6TUXN9hJK2nqJnYF4rgNKq490nD16YAeFq3bGkEkhQ6C7bMQyIOpfHPYqz7\n3E5pvhDvV2eJo76au5dwiWXvRpKmg0HT9D3Yb2r7QQKBgQDTQyol33c6MkYknNRX\nl2S40y+CTBTCas+2Llv6BeLHHi0hmn61Vga+pHRBaxU7YyAqRZ5pdyr+GF2fuVWM\nsfFzlPlIMf3+PcXjR01ipUklMo05087kJqNY5u3vz/3LVCAtAK34L6aXLIjiQl9F\ntxE66lLEbqwW4SmqEqT70BsnCQ==\n-----END PRIVATE KEY-----\n",
+    client_email: "ddt-generato@ddt-generation.iam.gserviceaccount.com",
+    client_id: "116861297205519680644",
+    auth_uri: "https://accounts.google.com/o/oauth2/auth",
+    token_uri: "https://oauth2.googleapis.com/token",
+    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+    client_x509_cert_url:
+      "https://www.googleapis.com/robot/v1/metadata/x509/ddt-generato%40ddt-generation.iam.gserviceaccount.com",
+    universe_domain: "googleapis.com",
+  },
   scopes: ["https://www.googleapis.com/auth/drive"],
 });
 
@@ -140,7 +152,7 @@ exports.getDDTList = async (mapFile = true) => {
 };
 
 exports.getNextDDTNumber = async () => {
-  const numbers = await getDDTList();
+  const numbers = await this.getDDTList();
 
   let next = 1;
   for (let i = 0; i < numbers.length; i++) {
