@@ -1,3 +1,4 @@
+const { connectDB } = require("../config/db");
 const { fetchOrders, fetchOrderDetails } = require("./cardTraderService");
 const excelService = require("./excelService");
 const fileService = require("./fileService");
@@ -72,4 +73,29 @@ function mapShippingItems(apiResponse) {
     allShippingItems.push(shippingItem);
   }
   return allShippingItems;
+}
+
+export async function createOrderIntoDB(
+  shippingAddress,
+  shippingMethod,
+  shippingItems
+) {
+  const obj = {
+    id: shippingAddress.orderCode,
+    name: shippingAddress.name,
+    street: shippingAddress.street,
+    zip: shippingAddress.zip,
+    city: shippingAddress.city,
+    state: shippingAddress.state_or_province,
+    country: shippingAddress.country,
+    shippingMethod: {
+      id: shippingMethod.id,
+      name: shippingMethod.name,
+      price: shippingMethod.price,
+    },
+    rows: shippingItems,
+  };
+  const db = await connectDB();
+  const result = await db.collection("orders").insertOne(obj);
+  return result.insertedId;
 }

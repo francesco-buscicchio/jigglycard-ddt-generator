@@ -1,21 +1,19 @@
 const snifferService = require("../services/snifferService");
 
-exports.sniffCardtraderProducts = async (req, res) => {
+export async function sniffCardtraderProducts() {
   try {
     snifferService
       .sniffCardtraderProducts()
-      .then(() => {
-        console.log("SniffCardtraderProducts completed successfully");
-      })
-      .catch((error) => {
-        console.error("Sniffer error:", error);
-      });
-
-    res.status(202).send("Sniffer started for Cardtrader products.");
+      .then(() => console.log("Successfully sniffed out Cardtrader products."));
+    return {
+      status: 200,
+      data: "It's beginning to sniff Cardtrader products.",
+    };
   } catch (error) {
-    console.error(error);
-    res
-      .status(500)
-      .send("An error occurred while initiating Cardtrader sniffer.");
+    console.error("❌ Errore in sniffCardtraderProducts:", error);
+    return {
+      status: 500,
+      data: "An error occurred while processing Cardtrader sniffer",
+    };
   }
-};
+}
