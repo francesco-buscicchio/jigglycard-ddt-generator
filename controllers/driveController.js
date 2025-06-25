@@ -1,38 +1,49 @@
-const driveHelper = require("../helper/drive");
+import driveHelper from "../helper/drive.js"; // o `import * as driveHelper` se è un modulo CommonJS
 
-exports.getDDTList = async (req, res) => {
+export async function getDDTList() {
   try {
-    console.log("Test route /ddt-list chiamata");
-    res.json({ ok: true, message: "Funziona!" });
-  } catch (err) {
-    console.error("Errore in test:", err);
-    res.status(500).json({ error: "Errore interno" });
+    const result = await driveHelper.getDDTList(false);
+    return {
+      status: 200,
+      data: result,
+    };
+  } catch (error) {
+    console.error("❌ Errore in getDDTList:", error);
+    return {
+      status: 500,
+      data: "An error occurred while getting DDT List.",
+    };
   }
-};
+}
 
-// exports.getDDTList = async (req, res) => {
-//   try {
-//     const result = await driveHelper.getDDTList(false);
-//     res.status(200).send(result);
-//   } catch (error) {
-//     res.status(500).send("An error occurred while getting DDT List.");
-//   }
-// };
+export async function downloadFileByName(name) {
+  if (!name) {
+    return {
+      status: 400,
+      data: "File name required",
+    };
+  }
 
-exports.downloadFileByName = async (req, res) => {
-  const rawName = req.query.name;
-  if (!rawName) return res.status(400).send("File name required");
-  const fileName = decodeURIComponent(rawName);
+  const fileName = decodeURIComponent(name);
 
   try {
     const file = await driveHelper.downloadFileByName(fileName);
-    if (!file) return res.status(404).send("File not found");
+    if (!file) {
+      return {
+        status: 404,
+        data: "File not found",
+      };
+    }
 
-    res.setHeader("Content-Disposition", `attachment; filename="${file.name}"`);
-    res.setHeader("Content-Type", file.mimeType);
-    file.stream.pipe(res);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Error downloading file");
+    return {
+      status: 200,
+      file,
+    };
+  } catch (error) {
+    console.error("❌ Errore in downloadFileByName:", error);
+    return {
+      status: 500,
+      data: "Error downloading file",
+    };
   }
-};
+}

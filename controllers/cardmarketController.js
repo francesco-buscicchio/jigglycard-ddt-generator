@@ -1,32 +1,43 @@
-const cardmarketService = require("../services/cardmarketService");
+import { processOrdersFromCSV } from "../services/cardmarketService.js";
 
-exports.fetchAndProcessCardmarketOrders = async (req, res) => {
+export async function fetchAndProcessCardmarketOrders() {
   try {
-    await cardmarketService.processOrdersFromCSV();
-    res.status(200).send("DDTs generated successfully for Cardmarket orders.");
+    await processOrdersFromCSV();
+    return {
+      status: 200,
+      message: "DDTs generated successfully for Cardmarket orders.",
+    };
   } catch (error) {
     console.error(error);
-    res
-      .status(500)
-      .send("An error occurred while processing Cardmarket orders.");
+    return {
+      status: 500,
+      message: "An error occurred while processing Cardmarket orders.",
+    };
   }
-};
+}
 
-exports.uploadCSV = async (req, res) => {
+export async function uploadCSV({ files }) {
   try {
-    const file1 = req.files["orders"]?.[0];
-    const file2 = req.files["articles"]?.[0];
+    const file1 = files["orders"]?.[0];
+    const file2 = files["articles"]?.[0];
 
     if (!file1 || !file2) {
-      return res.status(400).send("Entrambi i file devono essere caricati.");
+      return {
+        status: 400,
+        message: "Entrambi i file devono essere caricati.",
+      };
     }
 
     console.log("File salvati in:", file1.path, file2.path);
-    res
-      .status(200)
-      .send("File salvati con successo nella cartella 'cardmarket-file'.");
+    return {
+      status: 200,
+      message: "File salvati con successo nella cartella 'cardmarket-file'.",
+    };
   } catch (err) {
     console.error("Errore nel salvataggio dei file:", err);
-    res.status(500).send("Errore durante il salvataggio dei file.");
+    return {
+      status: 500,
+      message: "Errore durante il salvataggio dei file.",
+    };
   }
-};
+}

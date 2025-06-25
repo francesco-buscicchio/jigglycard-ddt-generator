@@ -3,8 +3,10 @@ const { google } = require("googleapis");
 const mime = require("mime-types");
 const { Readable } = require("stream");
 
+const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+
 const auth = new google.auth.GoogleAuth({
-  keyFile: "service-account.json",
+  credentials,
   scopes: ["https://www.googleapis.com/auth/drive"],
 });
 
