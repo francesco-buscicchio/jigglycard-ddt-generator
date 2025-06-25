@@ -17,6 +17,12 @@ exports.processOrders = async () => {
     const shippingMethod = mapShippingMethod(order);
     const shippingItems = mapShippingItems(orderDetail);
 
+    await createOrderIntoDB(
+      docAddress,
+      shippingMethod,
+      shippingItems,
+      ddtNumber
+    );
     await excelService.generateExcel(
       ddtNumber,
       docAddress,
@@ -78,7 +84,8 @@ function mapShippingItems(apiResponse) {
 export async function createOrderIntoDB(
   shippingAddress,
   shippingMethod,
-  shippingItems
+  shippingItems,
+  ddtNumber
 ) {
   const obj = {
     id: shippingAddress.orderCode,
@@ -88,6 +95,7 @@ export async function createOrderIntoDB(
     city: shippingAddress.city,
     state: shippingAddress.state_or_province,
     country: shippingAddress.country,
+    ddtNumber: ddtNumberm,
     shippingMethod: {
       id: shippingMethod.id,
       name: shippingMethod.name,
@@ -95,7 +103,16 @@ export async function createOrderIntoDB(
     },
     rows: shippingItems,
   };
+
   const db = await connectDB();
-  const result = await db.collection("orders").insertOne(obj);
+  const orders = db.collection("orders");
+
+  const existing = await orders.findOne({ id: obj.id });
+  if (existing) {
+    console.log(`⚠️ Ordine con id ${obj.id} già esistente.`);
+    return existing._id;
+  }
+
+  const result = await orders.insertOne(obj);
   return result.insertedId;
 }

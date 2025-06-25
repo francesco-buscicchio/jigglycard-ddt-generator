@@ -21,9 +21,9 @@ async function connectDB() {
   return db;
 }
 
-function getDB() {
+async function getDB() {
   if (!db) {
-    throw new Error("DB non inizializzato: chiama prima connectDB()");
+    await connectDB();
   }
   return db;
 }

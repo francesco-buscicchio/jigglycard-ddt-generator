@@ -1,7 +1,7 @@
 const { getDB } = require("../config/db");
 
 async function savePriceAlert(alert) {
-  const db = getDB();
+  const db = await getDB();
 
   const { setName, blueprintName, language, userID, productId, blueprintId } =
     alert;

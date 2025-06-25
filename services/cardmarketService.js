@@ -5,6 +5,7 @@ const excelService = require("./excelService");
 const fileService = require("./fileService");
 const { Address, ShippingMethod, ShippingItem } = require("../models");
 const { countryCodeToNameMap } = require("../const/countryCodeToNameMap");
+const { createOrderIntoDB } = require("./orderService");
 const CARDMARKET_DIR = "cardmarket-file";
 
 exports.processOrdersFromCSV = async () => {
@@ -72,6 +73,12 @@ exports.processOrdersFromCSV = async () => {
           })
       );
 
+    await createOrderIntoDB(
+      docAddress,
+      shippingMethod,
+      shippingItems,
+      ddtNumber
+    );
     await excelService.generateExcel(
       ddtNumber,
       docAddress,
