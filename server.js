@@ -1,9 +1,9 @@
 const express = require("express");
 const serverless = require("serverless-http");
 const cors = require("cors");
-require("dotenv").config();
 
 const { connectDB } = require("../config/db");
+const { PORT } = require("../config/config");
 
 const cardtraderRoute = require("../routes/cardtrader");
 const cardmarketRoute = require("../routes/cardmarket");
