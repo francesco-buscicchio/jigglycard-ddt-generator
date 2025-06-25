@@ -2,48 +2,44 @@ const express = require("express");
 const serverless = require("serverless-http");
 const cors = require("cors");
 
-const { connectDB } = require("../config/db");
-const { PORT } = require("../config/config");
+const { connectDB } = require("./config/db");
 
-const cardtraderRoute = require("../routes/cardtrader");
-const cardmarketRoute = require("../routes/cardmarket");
-const snifferRoute = require("../routes/sniffer");
-const driveRoute = require("../routes/drive");
+const cardtraderRoute = require("./routes/cardtrader");
+const cardmarketRoute = require("./routes/cardmarket");
+const snifferRoute = require("./routes/sniffer");
+const driveRoute = require("./routes/drive");
 
-const app = express();
+let cachedHandler; // Cache del handler
 
-// CORS
-app.use(
-  cors({
-    origin: "*",
-    methods: ["GET", "POST"],
-  })
-);
+async function getHandler() {
+  if (!cachedHandler) {
+    const app = express();
 
-// Middleware e routes
-app.use("/api/cardtrader", cardtraderRoute);
-app.use("/api/cardmarket", cardmarketRoute);
-app.use("/api/sniffer", snifferRoute);
-app.use("/api/drive", driveRoute);
+    app.use(
+      cors({
+        origin: "*",
+        methods: ["GET", "POST"],
+      })
+    );
 
-let handler;
+    app.use("/api/cardtrader", cardtraderRoute);
+    app.use("/api/cardmarket", cardmarketRoute);
+    app.use("/api/sniffer", snifferRoute);
+    app.use("/api/drive", driveRoute);
 
-(async () => {
-  try {
-    await connectDB();
-    handler = serverless(app);
-  } catch (err) {
-    console.error("Errore inizializzazione:", err);
-    handler = async (req, res) => {
-      res.status(500).send("Errore durante la connessione al database.");
-    };
+    await connectDB(); // Connessione DB una volta sola
+    cachedHandler = serverless(app);
   }
-})();
+
+  return cachedHandler;
+}
 
 module.exports = async (req, res) => {
-  if (handler) {
+  try {
+    const handler = await getHandler();
     return handler(req, res);
-  } else {
-    res.status(503).send("Server non ancora inizializzato");
+  } catch (err) {
+    console.error("Errore durante la connessione o inizializzazione:", err);
+    res.status(500).send("Errore del server");
   }
 };
