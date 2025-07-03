@@ -136,22 +136,17 @@ function setCustomerDetails(worksheet, docAddress, ddtNumber) {
 
 async function convertExcelToPDFWithLibreOffice(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
-    const command = `soffice --headless --convert-to pdf --outdir "${path.dirname(
-      outputPath
-    )}" "${inputPath}"`;
+    const command = `soffice --headless --convert-to pdf --outdir "${path.dirname(outputPath)}" "${inputPath}"`;
 
     exec(command, (error, stdout, stderr) => {
       if (error) {
-        console.error("Errore durante la conversione con LibreOffice:", stderr);
+        console.error("Errore nella conversione con LibreOffice:", stderr);
         return reject(error);
       }
 
-      const convertedPath = path.join(
-        path.dirname(outputPath),
-        path.basename(inputPath).replace(/\.xlsx$/, ".pdf")
-      );
+      const convertedPath = path.join(path.dirname(outputPath), path.basename(inputPath).replace(/\.xlsx$/, ".pdf"));
+
       if (fs.existsSync(convertedPath)) {
-        // Rinomina il file se necessario
         if (convertedPath !== outputPath) {
           fs.renameSync(convertedPath, outputPath);
         }
