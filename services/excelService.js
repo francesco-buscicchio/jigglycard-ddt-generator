@@ -3,9 +3,7 @@ const { uploadFile } = require("../helper/drive");
 const { TEMPLATE_FILE, EXPORT_FOLDER } = require("../config/config");
 const path = require("path");
 const fs = require("fs");
-const CloudConvert = require("cloudconvert");
-
-const cloudConvert = new CloudConvert(process.env.CLOUDCONVERTER_TOKEN);
+const { exec } = require("child_process");
 
 exports.generateExcel = async (
   ddtNumber,
@@ -63,7 +61,7 @@ exports.generateExcel = async (
 
   // Convert XLSX to PDF
   const pdfPath = path.join(EXPORT_FOLDER, `${fileNameBase}.pdf`);
-  await convertExcelToPDFCloud(filePath, pdfPath);
+  await convertExcelToPDFWithLibreOffice(filePath, pdfPath);
 
   // Upload PDF to Google Drive
   const PDFfolderId = process.env.DRIVE_FOLDER_PDF_TEMP_ID || null;
@@ -136,45 +134,33 @@ function setCustomerDetails(worksheet, docAddress, ddtNumber) {
   ).value = `${docAddress.street}\n${docAddress.zip} ${docAddress.city}, ${docAddress.state_or_province}`;
 }
 
-async function convertExcelToPDFCloud(inputPath, outputPath) {
-  const job = await cloudConvert.jobs.create({
-    tasks: {
-      "import-my-file": {
-        operation: "import/upload",
-      },
-      "convert-my-file": {
-        operation: "convert",
-        input: "import-my-file",
-        input_format: "xlsx",
-        output_format: "pdf",
-        options: {
-          pdf: {
-            paper_size: "a4",
-            page_orientation: "portrait",
-            fit_to_page: true,
-            zoom: 100,
-          },
-        },
-      },
-      "export-my-file": {
-        operation: "export/url",
-        input: "convert-my-file",
-      },
-    },
+async function convertExcelToPDFWithLibreOffice(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const command = `soffice --headless --convert-to pdf --outdir "${path.dirname(
+      outputPath
+    )}" "${inputPath}"`;
+
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        console.error("Errore durante la conversione con LibreOffice:", stderr);
+        return reject(error);
+      }
+
+      const convertedPath = path.join(
+        path.dirname(outputPath),
+        path.basename(inputPath).replace(/\.xlsx$/, ".pdf")
+      );
+      if (fs.existsSync(convertedPath)) {
+        // Rinomina il file se necessario
+        if (convertedPath !== outputPath) {
+          fs.renameSync(convertedPath, outputPath);
+        }
+        resolve();
+      } else {
+        reject(new Error("Il file PDF convertito non è stato trovato."));
+      }
+    });
   });
-
-  const uploadTask = job.tasks.find((task) => task.name === "import-my-file");
-  await cloudConvert.tasks.upload(uploadTask, fs.createReadStream(inputPath));
-
-  const exportTaskId = job.tasks.find((t) => t.name === "export-my-file").id;
-  const completedExportTask = await cloudConvert.tasks.wait(exportTaskId);
-
-  const fileUrl = completedExportTask.result.files[0].url;
-
-  const response = await fetch(fileUrl);
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  fs.writeFileSync(outputPath, buffer);
 }
 
 function applyPageSetup(sheet) {
