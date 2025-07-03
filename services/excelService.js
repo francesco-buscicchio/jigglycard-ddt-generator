@@ -1,6 +1,11 @@
 const Excel = require("exceljs");
 const { uploadFile } = require("../helper/drive");
 const { TEMPLATE_FILE, EXPORT_FOLDER } = require("../config/config");
+const path = require("path");
+const fs = require("fs");
+const CloudConvert = require("cloudconvert");
+
+const cloudConvert = new CloudConvert(process.env.CLOUDCONVERTER_TOKEN);
 
 exports.generateExcel = async (
   ddtNumber,
@@ -11,13 +16,7 @@ exports.generateExcel = async (
   const workbook = new Excel.Workbook();
   await workbook.xlsx.readFile(TEMPLATE_FILE);
   let sheet = workbook.getWorksheet(1);
-  sheet.pageSetup = {
-    paperSize: 9,
-    orientation: "portrait",
-    fitToPage: true,
-    fitToWidth: 1,
-    fitToHeight: 0,
-  };
+  applyPageSetup(sheet);
   removeColumn(sheet, 11);
 
   setCustomerDetails(sheet, docAddress, ddtNumber);
@@ -32,7 +31,7 @@ exports.generateExcel = async (
     row++;
   }
 
-  shippingItems.forEach((item, idx) => {
+  shippingItems.forEach((item) => {
     if (row > 39) {
       page++;
       sheet = cloneTemplate(
@@ -48,16 +47,27 @@ exports.generateExcel = async (
     sheet.getCell(`B${row}`).value = `${item.name} ${item.collectionNumber}`;
     sheet.getCell(`H${row}`).value = (item.price / 100) * item.quantity;
     row++;
+    applyPageSetup(sheet);
   });
 
-  const fileName = `${new Date().getFullYear()}-${ddtNumber} - ${
+  const fileNameBase = `${new Date().getFullYear()}-${ddtNumber} - ${
     docAddress.name
-  }.xlsx`;
-  const filePath = `${EXPORT_FOLDER}/${fileName}`;
+  }`;
+  const fileName = `${fileNameBase}.xlsx`;
+  const filePath = path.join(EXPORT_FOLDER, fileName);
   await workbook.xlsx.writeFile(filePath);
 
+  // Upload XLSX to Google Drive
   const folderId = process.env.DRIVE_FOLDER_ID || null;
-  const result = await uploadFile(filePath, fileName, folderId);
+  await uploadFile(filePath, fileName, folderId);
+
+  // Convert XLSX to PDF
+  const pdfPath = path.join(EXPORT_FOLDER, `${fileNameBase}.pdf`);
+  await convertExcelToPDFCloud(filePath, pdfPath);
+
+  // Upload PDF to Google Drive
+  const PDFfolderId = process.env.DRIVE_FOLDER_PDF_TEMP_ID || null;
+  await uploadFile(pdfPath, `${fileNameBase}.pdf`, PDFfolderId);
 };
 
 function cloneTemplate(workbook, sourceSheet, sheetName, sheet) {
@@ -124,4 +134,63 @@ function setCustomerDetails(worksheet, docAddress, ddtNumber) {
   worksheet.getCell(
     "A41"
   ).value = `${docAddress.street}\n${docAddress.zip} ${docAddress.city}, ${docAddress.state_or_province}`;
+}
+
+async function convertExcelToPDFCloud(inputPath, outputPath) {
+  const job = await cloudConvert.jobs.create({
+    tasks: {
+      "import-my-file": {
+        operation: "import/upload",
+      },
+      "convert-my-file": {
+        operation: "convert",
+        input: "import-my-file",
+        input_format: "xlsx",
+        output_format: "pdf",
+        options: {
+          pdf: {
+            paper_size: "a4",
+            page_orientation: "portrait",
+            fit_to_page: true,
+            zoom: 100,
+          },
+        },
+      },
+      "export-my-file": {
+        operation: "export/url",
+        input: "convert-my-file",
+      },
+    },
+  });
+
+  const uploadTask = job.tasks.find((task) => task.name === "import-my-file");
+  await cloudConvert.tasks.upload(uploadTask, fs.createReadStream(inputPath));
+
+  const exportTaskId = job.tasks.find((t) => t.name === "export-my-file").id;
+  const completedExportTask = await cloudConvert.tasks.wait(exportTaskId);
+
+  const fileUrl = completedExportTask.result.files[0].url;
+
+  const response = await fetch(fileUrl);
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  fs.writeFileSync(outputPath, buffer);
+}
+
+function applyPageSetup(sheet) {
+  sheet.pageSetup = {
+    paperSize: 9, // A4
+    orientation: "portrait",
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    margins: {
+      left: 0.3,
+      right: 0.3,
+      top: 0.5,
+      bottom: 0.5,
+      header: 0.2,
+      footer: 0.2,
+    },
+  };
 }

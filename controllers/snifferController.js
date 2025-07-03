@@ -1,6 +1,6 @@
 const snifferService = require("../services/snifferService");
 
-export async function sniffCardtraderProducts() {
+exports.sniffCardtraderProducts = async () => {
   try {
     await snifferService.sniffCardtraderProducts(); // aspetta tutto
     return {
@@ -14,4 +14,4 @@ export async function sniffCardtraderProducts() {
       data: "Errore nello sniffer.",
     };
   }
-}
+};

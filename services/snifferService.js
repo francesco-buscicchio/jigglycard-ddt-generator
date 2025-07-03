@@ -94,7 +94,7 @@ exports.sniffCardtraderProducts = async () => {
               secondPrice,
               productId: first.id,
               blueprintId: blueprint.id,
-              userID: productData[0].user.username,
+              userID: productData[0].user.id,
               tcgID: item.game_id,
               urls: buildCardLinks(blueprint, productData[0]),
               collector_number: first.properties_hash.collector_number,

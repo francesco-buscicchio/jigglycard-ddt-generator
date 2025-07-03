@@ -1,6 +1,6 @@
-import driveHelper from "../helper/drive.js"; // o `import * as driveHelper` se è un modulo CommonJS
+const driveHelper = require("../helper/drive.js");
 
-export async function getDDTList() {
+exports.getDDTList = async () => {
   try {
     const result = await driveHelper.getDDTList(false);
     return {
@@ -14,9 +14,9 @@ export async function getDDTList() {
       data: "An error occurred while getting DDT List.",
     };
   }
-}
+};
 
-export async function downloadFileByName(name) {
+exports.downloadFileByName = async (name) => {
   if (!name) {
     return {
       status: 400,
@@ -46,4 +46,4 @@ export async function downloadFileByName(name) {
       data: "Error downloading file",
     };
   }
-}
+};

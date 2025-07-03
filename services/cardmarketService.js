@@ -77,7 +77,7 @@ exports.processOrdersFromCSV = async () => {
       docAddress,
       shippingMethod,
       shippingItems,
-      ddtNumber
+      `${new Date().getFullYear()}-${ddtNumber}`
     );
     await excelService.generateExcel(
       ddtNumber,

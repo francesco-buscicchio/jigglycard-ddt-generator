@@ -3,19 +3,16 @@ const { getDB } = require("../config/db");
 async function savePriceAlert(alert) {
   const db = await getDB();
 
-  const { setName, blueprintName, language, userID, productId, blueprintId } =
-    alert;
+  const { language, userID, productId, blueprintId, checked, ...rest } = alert;
 
   const result = await db.collection("errorPriceAlert").updateOne(
     {
-      setName,
-      blueprintName,
       language,
       userID,
       productId,
       blueprintId,
-    }, // filtro “unicità”
-    { $setOnInsert: { ...alert } }, // dati da inserire solo se nuovo
+    }, // filtro di unicità
+    { $setOnInsert: { ...rest, checked } }, // inserisce solo se nuovo
     { upsert: true }
   );
 

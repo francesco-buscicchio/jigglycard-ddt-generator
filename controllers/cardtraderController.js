@@ -1,6 +1,6 @@
-import { processOrders } from "../services/orderService.js";
+const { processOrders } = require("../services/orderService.js");
 
-export async function fetchAndProcessOrders() {
+exports.fetchAndProcessOrders = async (req, res) => {
   try {
     await processOrders();
     return {
@@ -14,4 +14,4 @@ export async function fetchAndProcessOrders() {
       message: "An error occurred while processing orders.",
     };
   }
-}
+};

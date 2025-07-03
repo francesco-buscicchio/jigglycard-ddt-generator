@@ -81,12 +81,12 @@ function mapShippingItems(apiResponse) {
   return allShippingItems;
 }
 
-export async function createOrderIntoDB(
+exports.createOrderIntoDB = async (
   shippingAddress,
   shippingMethod,
   shippingItems,
   ddtNumber
-) {
+) => {
   const obj = {
     id: shippingAddress.orderCode,
     name: shippingAddress.name,
@@ -95,7 +95,7 @@ export async function createOrderIntoDB(
     city: shippingAddress.city,
     state: shippingAddress.state_or_province,
     country: shippingAddress.country,
-    ddtNumber: ddtNumberm,
+    ddtNumber: ddtNumber,
     shippingMethod: {
       id: shippingMethod.id,
       name: shippingMethod.name,
@@ -115,4 +115,4 @@ export async function createOrderIntoDB(
 
   const result = await orders.insertOne(obj);
   return result.insertedId;
-}
+};

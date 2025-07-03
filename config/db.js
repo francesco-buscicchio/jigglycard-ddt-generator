@@ -1,6 +1,8 @@
 const { MongoClient, ServerApiVersion } = require("mongodb");
 
-const uri = process.env.MONGODB_URI;
+const uri =
+  process.env.MONGODB_URI ||
+  "mongodb+srv://jigglycard:drMaPWuiE838WTWd@cluster0.ekqifsj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 const dbName = process.env.DB_NAME || "CMS";
 
 const client = new MongoClient(uri, {

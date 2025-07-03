@@ -1,6 +1,6 @@
-import { processOrdersFromCSV } from "../services/cardmarketService.js";
+const { processOrdersFromCSV } = require("../services/cardmarketService.js");
 
-export async function fetchAndProcessCardmarketOrders() {
+exports.fetchAndProcessCardmarketOrders = async (req, res) => {
   try {
     await processOrdersFromCSV();
     return {
@@ -14,9 +14,9 @@ export async function fetchAndProcessCardmarketOrders() {
       message: "An error occurred while processing Cardmarket orders.",
     };
   }
-}
+};
 
-export async function uploadCSV({ files }) {
+exports.uploadCSV = async ({ files }) => {
   try {
     const file1 = files["orders"]?.[0];
     const file2 = files["articles"]?.[0];
@@ -28,7 +28,7 @@ export async function uploadCSV({ files }) {
       };
     }
 
-    console.log("File salvati in:", file1.path, file2.path);
+    console.log("File salvati in:", file1.filepath, file2.filepath);
     return {
       status: 200,
       message: "File salvati con successo nella cartella 'cardmarket-file'.",
@@ -40,4 +40,4 @@ export async function uploadCSV({ files }) {
       message: "Errore durante il salvataggio dei file.",
     };
   }
-}
+};
