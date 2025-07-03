@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 module.exports = {
-  PORT: process.env.PORT || 3005,
+  PORT: process.env.PORT || 3000,
   CARDTRADER_TOKEN: process.env.CARDTRADER_TOKEN,
   EXPORT_FOLDER: process.env.EXPORT_FOLDER,
   PROCESSED_ORDERS_FILE: "processed_orders.txt",
