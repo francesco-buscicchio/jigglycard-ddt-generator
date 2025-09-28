@@ -178,52 +178,43 @@ exports.checkMyProductsAgainstMarket = async () => {
 };
 
 // 1) Primo vs secondo prezzo
-async function checkMyProductDifference(item, blueprint, lang, list) {
-  const filtered = list.filter(
-    (p) =>
-      p.user.country_code !== "US" &&
-      p.user.country_code !== "CA" &&
-      p.user.country_code !== "NZ"
-  );
+async function checkPriceDifferenceStandard(item, blueprint, lang, list) {
+  list.sort((a, b) => a.price_cents - b.price_cents);
 
-  if (filtered.length < 2) return;
+  if (list.length < 2) return;
 
-  // ordino per prezzo crescente
-  filtered.sort((a, b) => a.price_cents - b.price_cents);
+  const [first, second] = list;
+  const minorPrice = first.price_cents;
+  const secondPrice = second.price_cents;
+  const minorPriceAlert = minorPrice * 1.4;
 
-  // prendo i miei prodotti
-  const myProducts = filtered.filter((p) => p.user.username === "Jigglycard");
-  if (myProducts.length === 0) return;
+  if (secondPrice - minorPriceAlert < 5) return;
+  if (secondPrice - minorPrice < 100) return;
 
-  // per ogni mio prodotto confronto col prezzo più basso degli altri
-  for (const myProduct of myProducts) {
-    const others = filtered.filter((p) => p.user.username !== "Jigglycard");
-    if (others.length === 0) continue;
+  // Caso speciale per reverse Pokémon
+  if (
+    item.game_id === 5 &&
+    first.properties_hash.pokemon_reverse !==
+      second.properties_hash.pokemon_reverse
+  )
+    return;
 
-    const secondPrice = others[0].price_cents;
-
-    // differenza deve essere >= 1 cent
-    if (secondPrice - myProduct.price_cents >= 1) {
-      console.log(
-        `⚡ Mio prodotto più economico di almeno 1 cent: ${item.name} - ${blueprint.name} (${lang})`
-      );
-
-      await savePriceAlert({
-        setName: item.name,
-        blueprintName: blueprint.name,
-        language: lang,
-        minorPrice: myProduct.price_cents,
-        secondPrice,
-        productId: myProduct.id,
-        blueprintId: blueprint.id,
-        userID: myProduct.user.id,
-        tcgID: item.game_id,
-        urls: buildCardLinks(blueprint, myProduct),
-        collector_number: myProduct.properties_hash.collector_number,
-        timestamp: new Date(),
-        checked: false,
-      });
-    }
+  if (minorPriceAlert < secondPrice) {
+    await savePriceAlert({
+      setName: item.name,
+      blueprintName: blueprint.name,
+      language: lang,
+      minorPrice,
+      secondPrice,
+      productId: first.id,
+      blueprintId: blueprint.id,
+      userID: list[0].user.id,
+      tcgID: item.game_id,
+      urls: buildCardLinks(blueprint, list[0]),
+      collector_number: first.properties_hash.collector_number,
+      timestamp: new Date(),
+      checked: false,
+    });
   }
 }
 
