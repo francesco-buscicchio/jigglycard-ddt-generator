@@ -25,6 +25,7 @@
     "mime-types": "^3.0.1",
     "mongodb": "^6.17.0",
     "multer": "^2.0.1",
+    "node-cron": "^4.2.1",
     "node-fetch": "^3.3.2",
     "serverless-http": "^3.2.0"
   },

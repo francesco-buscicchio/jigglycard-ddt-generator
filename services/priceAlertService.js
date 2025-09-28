@@ -1,5 +1,10 @@
 const { getDB } = require("../config/db");
 
+async function clearPriceAlert() {
+  const db = await getDB();
+  await await db.collection("errorPriceAlert").deleteMany({ checked: false });
+}
+
 async function savePriceAlert(alert) {
   const db = await getDB();
 
@@ -19,4 +24,4 @@ async function savePriceAlert(alert) {
   return !!result.upsertedCount; // true se ha inserito, false se già esisteva
 }
 
-module.exports = { savePriceAlert };
+module.exports = { savePriceAlert, clearPriceAlert };
