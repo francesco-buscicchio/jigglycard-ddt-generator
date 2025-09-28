@@ -14,9 +14,6 @@ const app = express();
       console.log(`Server attivo su http://localhost:${PORT}`);
     });
 
-    console.log("⚡ Avvio immediato Sniffer di test");
-    await snifferService.sniffCardtraderProducts();
-
     //PING CRON IN ESECUZIONE
     cron.schedule("*/30 * * * * *", () => {
       console.log(`[CRON] Ping delle: ${new Date().toISOString()}`);
