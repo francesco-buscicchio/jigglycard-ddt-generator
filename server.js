@@ -15,7 +15,7 @@ const app = express();
     });
 
     //PING CRON IN ESECUZIONE
-    cron.schedule("*/30 * * * * *", () => {
+    cron.schedule("*/5 * * * *", () => {
       console.log(`[CRON] Ping delle: ${new Date().toISOString()}`);
     });
     //SNIFFER ERRORI DI PREZZO
