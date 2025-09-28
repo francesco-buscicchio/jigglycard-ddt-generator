@@ -50,6 +50,12 @@ exports.getBlueprintsByExpansionId = async (expansion_id) => {
   return result;
 };
 
+exports.getMyProducts = async () => {
+  const url = `${cardTraderApiBaseUrl}/products/export`;
+  const result = await axios.get(url, headers);
+  return result;
+};
+
 exports.getProduct = async (blueprint_id) => {
   const url = `${cardTraderApiBaseUrl}/marketplace/products?blueprint_id=${blueprint_id}`;
   const result = await axios.get(url, headers);

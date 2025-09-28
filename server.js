@@ -28,6 +28,16 @@ const app = express();
         console.error("Errore nello Sniffer:", err);
       }
     });
+    //CONTROLLO ARTICOLI SOTTOPREZZATI
+    cron.schedule("0 */12 * * *", async () => {
+      console.log("Inizio Controllo Prodotti Sottoprezzati");
+      try {
+        await snifferService.checkMyProductsAgainstMarket();
+        console.log("Fine Controllo Prodotti Sottoprezzati");
+      } catch (err) {
+        console.error("Errore Controllo Prodotti Sottoprezzati:", err);
+      }
+    });
     //AGGIORNAMENTO BOOSTER
     cron.schedule("0 */24 * * *", async () => {
       console.log("Inizio Update Booster Giapponesi");

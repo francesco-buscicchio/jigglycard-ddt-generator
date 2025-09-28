@@ -62,7 +62,7 @@ export const updateBooster = async () => {
   const pkm_expansion = expansions.filter((val) => val.game_id === 5);
 
   for (let expansion of pkm_expansion) {
-    await sleep(1000);
+    await sleep(2000);
     const blueprints = (await getBlueprintsByExpansionId(expansion.id)).data;
 
     const filterBooster = blueprints.filter((val) => {
