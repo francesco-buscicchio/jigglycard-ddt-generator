@@ -2,7 +2,7 @@ const { getDB } = require("../config/db");
 
 async function clearMyPriceAlert() {
   const db = await getDB();
-  await await db.collection("myErrorPriceAlert").deleteMany({ checked: false });
+  await db.collection("myErrorPriceAlert").deleteMany();
 }
 
 async function saveMyPriceAlert(alert) {

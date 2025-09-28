@@ -10,6 +10,7 @@ const app = express();
 (async () => {
   try {
     await connectDB();
+
     app.listen(PORT, () => {
       console.log(`Server attivo su http://localhost:${PORT}`);
     });
@@ -46,6 +47,16 @@ const app = express();
         console.log("Fine Update Booster Giapponesi");
       } catch (err) {
         console.error("Errore nell'update dei Booster Giapponesi:", err);
+      }
+    });
+    //AGGIORNAMENTO PRODOTTI
+    cron.schedule("0 0 1 * *", async () => {
+      console.log("Inizio Aggiornamento Prodotti");
+      try {
+        await updateBooster();
+        console.log("Fine Aggiornamento Prodotti");
+      } catch (err) {
+        console.error("Errore Nell'Aggiornamento Prodotti:", err);
       }
     });
   } catch (err) {

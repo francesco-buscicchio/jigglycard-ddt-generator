@@ -1,5 +1,6 @@
 const cardtraderService = require("../services/cardTraderService.js");
 const expansionsToIgnore = require("../helper/expansionsToIgnore.js");
+const { saveProduct } = require("../services/productService.js");
 const {
   savePriceAlert,
   clearPriceAlert,
@@ -11,6 +12,50 @@ const {
 const { buildCardLinks } = require("../helper/urlGenerator.js");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+exports.copyProductsCardtrader = async () => {
+  const expansions = (await cardtraderService.getExpansions()).data;
+  await sleep(2000);
+  const categories = (await cardtraderService.getCategories()).data;
+  await sleep(2000);
+  for (let expansion of expansions) {
+    if (
+      expansion.game_id !== 5 &&
+      expansion.game_id !== 9 &&
+      expansion.game_id !== 15
+    )
+      continue;
+
+    const bluesprints = (
+      await cardtraderService.getBlueprintsByExpansionId(expansion.id)
+    ).data;
+
+    await sleep(2000);
+
+    for (let blueprint of bluesprints) {
+      const category = categories.filter((val) => {
+        return val.id === blueprint.category_id;
+      });
+
+      const productData = {
+        id: blueprint.id,
+        name: blueprint.name,
+        cardmarket_id:
+          blueprint.card_market_ids.length > 0
+            ? blueprint.card_market_ids[0]
+            : 0,
+        category_id: category[0].id,
+        category_name: category[0].name,
+        game_id: category[0].game_id,
+        image_url: blueprint.image_url,
+        expansion_code: expansion.code,
+        expansion_name: expansion.name,
+      };
+
+      await saveProduct(productData);
+    }
+  }
+};
 
 exports.sniffCardtraderProducts = async () => {
   await clearPriceAlert();

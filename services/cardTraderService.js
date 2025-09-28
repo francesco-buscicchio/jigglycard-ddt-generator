@@ -61,3 +61,9 @@ exports.getProduct = async (blueprint_id) => {
   const result = await axios.get(url, headers);
   return result;
 };
+
+exports.getCategories = async () => {
+  const url = `${cardTraderApiBaseUrl}/categories`;
+  const result = await axios.get(url, headers);
+  return result;
+};
