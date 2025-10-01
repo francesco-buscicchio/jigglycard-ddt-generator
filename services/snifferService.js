@@ -157,27 +157,36 @@ exports.checkMyProductsAgainstMarket = async () => {
 
       // Filtri standard
       listings = listings.filter((l) => {
-        const condOk = l?.properties_hash?.condition === "Near Mint";
         const hubOk = l?.user?.can_sell_via_hub === true;
         const countryOk =
           l?.user?.country_code !== "US" &&
           l?.user?.country_code !== "CA" &&
           l?.user?.country_code !== "NZ";
 
-        return condOk && hubOk && countryOk;
+        return hubOk && countryOk;
       });
 
       if (listings.length === 0) continue;
 
       listings.sort((a, b) => a.price_cents - b.price_cents);
 
-      const others = listings.filter((l) => l?.user?.username !== "Jigglycard");
+      const myProduct = listings.filter(
+        (l) => l?.user?.username === "Jigglycard"
+      )[0];
+      const others = listings.filter(
+        (l) =>
+          l?.user?.username !== "Jigglycard" &&
+          l?.graded === myProduct.graded &&
+          l?.properties_hash.pokemon_language ===
+            myProduct.properties_hash.pokemon_language &&
+          l?.properties_hash.condition == myProduct.properties_hash.condition
+      );
       if (others.length === 0) continue;
 
       const othersBest = others[0];
-      const diffCents = othersBest.price_cents - myPrice;
+      const diffCents = othersBest.price_cents - myProduct.price_cents;
 
-      if (diffCents >= 1) {
+      if (Math.abs(diffCents) >= 1) {
         // lingua calcolata con la logica allowedLang
         const allowedLang = ["it", "jp", "jap", "en"];
         const p = item.properties_hash ?? {};
@@ -202,7 +211,7 @@ exports.checkMyProductsAgainstMarket = async () => {
           setName: item?.expansion_name ?? "",
           blueprintName: item?.name_en ?? "",
           language: lang,
-          minorPrice: myPrice,
+          minorPrice: myProduct.price_cents,
           secondPrice: othersBest.price_cents,
           productId: item?.id,
           blueprintId: blueprintId,

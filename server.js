@@ -10,6 +10,7 @@ const app = express();
 (async () => {
   try {
     await connectDB();
+    await snifferService.checkMyProductsAgainstMarket();
 
     app.listen(PORT, () => {
       console.log(`Server attivo su http://localhost:${PORT}`);
@@ -20,7 +21,7 @@ const app = express();
       console.log(`[CRON] Ping delle: ${new Date().toISOString()}`);
     });
     //SNIFFER ERRORI DI PREZZO
-    cron.schedule("0 */4 * * *", async () => {
+    cron.schedule("0 */6 * * *", async () => {
       console.log("Inizio Sniffer Errori Di Prezzo");
       try {
         await snifferService.sniffCardtraderProducts();
