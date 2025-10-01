@@ -10,7 +10,6 @@ const app = express();
 (async () => {
   try {
     await connectDB();
-    await snifferService.checkMyProductsAgainstMarket();
 
     app.listen(PORT, () => {
       console.log(`Server attivo su http://localhost:${PORT}`);
