@@ -53,7 +53,7 @@ const app = express();
     cron.schedule("0 0 1 * *", async () => {
       console.log("Inizio Aggiornamento Prodotti");
       try {
-        await updateBooster();
+        await snifferService.copyProductsCardtrader();
         console.log("Fine Aggiornamento Prodotti");
       } catch (err) {
         console.error("Errore Nell'Aggiornamento Prodotti:", err);

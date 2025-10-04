@@ -50,6 +50,12 @@ exports.copyProductsCardtrader = async () => {
         image_url: blueprint.image_url,
         expansion_code: expansion.code,
         expansion_name: expansion.name,
+        rarity:
+          blueprint.game_id === 5
+            ? blueprint.fixed_properties.pokemon_rarity
+            : blueprint.game_id === 9
+            ? blueprint.fixed_properties.dragonball_rarity
+            : blueprint.fixed_properties.onepiece_rarity,
       };
 
       await saveProduct(productData);
