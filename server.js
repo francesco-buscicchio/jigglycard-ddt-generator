@@ -20,7 +20,7 @@ const app = express();
       console.log(`[CRON] Ping delle: ${new Date().toISOString()}`);
     });
     //SNIFFER ERRORI DI PREZZO
-    cron.schedule("0 */6 * * *", async () => {
+    cron.schedule("0 */12 * * *", async () => {
       console.log("Inizio Sniffer Errori Di Prezzo");
       try {
         await snifferService.sniffCardtraderProducts();
