@@ -85,17 +85,37 @@ exports.sniffCardtraderProducts = async () => {
       `Processing expansion: ${item.name}, ID: ${item.id}, GameID: ${item.game_id}`
     );
     // Prende in considerazione solo i set di carte di Pokemon e One Piece
-    if (item.game_id !== 15 && item.game_id !== 5 && item.game_id !== 9)
+    if (
+      //item.game_id !== 15 &&
+      item.game_id !== 5
+      //&& item.game_id !== 9
+    )
       continue;
-    await sleep(2000);
+    await sleep(500);
     const bluesprints = await cardtraderService.getBlueprintsByExpansionId(
       item.id
     );
     const blueprintsData = bluesprints.data;
 
     for (let blueprint of blueprintsData) {
+      const rarity =
+        blueprint.game_id === 5
+          ? blueprint.fixed_properties.pokemon_rarity
+          : blueprint.game_id === 9
+          ? blueprint.fixed_properties.dragonball_rarity
+          : blueprint.fixed_properties.onepiece_rarity;
+
+      if (
+        !rarity ||
+        rarity.toLowerCase() === "common" ||
+        rarity.toLowerCase() === "uncommon" ||
+        rarity.toLowerCase() === "rare" ||
+        rarity.toLowerCase() === "holo rare" ||
+        rarity.toLowerCase() === "fixed"
+      )
+        continue;
       try {
-        await sleep(2000);
+        await sleep(500);
         const product = await cardtraderService.getProduct(blueprint.id);
         let productData = product.data[blueprint.id];
         productData = productData.filter((val) => {
@@ -130,11 +150,16 @@ exports.sniffCardtraderProducts = async () => {
 
           if (list.length < 2) continue;
 
-          // Logica attuale
           await checkPriceDifferenceStandard(item, blueprint, lang, list);
-
-          // Nuova logica US/CA vs EU
           await checkPriceDifferenceUSvsEU(item, blueprint, lang, list);
+          await checkLowPriceByRarity(item, blueprint, lang, list, [
+            { name: "Illustration Rare", maxPrice: 51 },
+            { name: "Double Rare", maxPrice: 15 },
+            { name: "Triple Rare", maxPrice: 15 },
+            { name: "Rare Holo V", maxPrice: 15 },
+            { name: "Shiny Holo Rare", maxPrice: 30 },
+            { name: "Secret Rare", maxPrice: 50 },
+          ]);
         }
       } catch (error) {
         console.error(
@@ -274,6 +299,7 @@ async function checkPriceDifferenceStandard(item, blueprint, lang, list) {
       collector_number: first.properties_hash.collector_number,
       timestamp: new Date(),
       checked: false,
+      type: "standard",
     });
   }
 }
@@ -332,6 +358,49 @@ async function checkPriceDifferenceUSvsEU(item, blueprint, lang, list) {
       collector_number: firstUSCA.properties_hash.collector_number,
       timestamp: new Date(),
       checked: false,
+      type: "America vs Europe",
     });
+  }
+}
+
+// Controllo generico su rarità con prezzo sotto soglia
+async function checkLowPriceByRarity(item, blueprint, lang, list, configList) {
+  const prod = list[0];
+  const rarity =
+    prod.properties_hash?.pokemon_rarity ??
+    prod.properties_hash?.onepiece_rarity ??
+    prod.properties_hash?.dragonball_rarity ??
+    null;
+
+  if (!rarity) return;
+
+  const rarityLower = rarity.toLowerCase();
+
+  for (const config of configList) {
+    // es: { name: "Illustration Rare", maxPrice: 51 }
+    if (rarityLower === config.name.toLowerCase()) {
+      if (prod.price_cents < config.maxPrice) {
+        await savePriceAlert({
+          setName: item.name,
+          blueprintName: blueprint.name,
+          language: lang,
+          minorPrice: prod.price_cents,
+          secondPrice: list[1].price_cents,
+          productId: prod.id,
+          blueprintId: blueprint.id,
+          userID: prod.user.id,
+          tcgID: item.game_id,
+          urls: buildCardLinks(blueprint, prod),
+          collector_number: prod.properties_hash?.collector_number ?? null,
+          timestamp: new Date(),
+          checked: false,
+          type: `Rarità "${config.name}" sotto ${config.maxPrice / 100}€`,
+        });
+
+        console.log(
+          `[LOW-PRICE-RARITY] ${item.name} - ${blueprint.name} | lang=${lang} | rarità=${rarity} | prezzo=${prod.price_cents}c`
+        );
+      }
+    }
   }
 }

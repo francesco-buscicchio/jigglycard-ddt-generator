@@ -32,6 +32,9 @@ const insertBoosterInToMongo = async (boosterJP) => {
     await client.connect();
     const db = client.db("CMS");
     const collection = db.collection("booster_jp");
+
+    const data = await collection.find().toArray();
+
     await collection.deleteMany({});
     await collection.insertMany(boosterJP);
 
@@ -62,7 +65,8 @@ export const updateBooster = async () => {
   const pkm_expansion = expansions.filter((val) => val.game_id === 5);
 
   for (let expansion of pkm_expansion) {
-    await sleep(2000);
+    if (boosterJp.length > 0) continue;
+    await sleep(500);
     const blueprints = (await getBlueprintsByExpansionId(expansion.id)).data;
 
     const filterBooster = blueprints.filter((val) => {
