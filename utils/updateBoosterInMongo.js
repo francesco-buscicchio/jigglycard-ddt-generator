@@ -35,8 +35,12 @@ const insertBoosterInToMongo = async (boosterJP) => {
 
     const data = await collection.find().toArray();
 
-    await collection.deleteMany({});
-    await collection.insertMany(boosterJP);
+    for (let item of boosterJP) {
+      const indexBooster = data.findIndex((val) => {
+        return val.id === item.id;
+      });
+      if (indexBooster === -1) await collection.insertOne(item);
+    }
 
     console.log("✅ Booster JP inseriti in MongoDB!");
   } catch (err) {
@@ -65,7 +69,6 @@ export const updateBooster = async () => {
   const pkm_expansion = expansions.filter((val) => val.game_id === 5);
 
   for (let expansion of pkm_expansion) {
-    if (boosterJp.length > 0) continue;
     await sleep(500);
     const blueprints = (await getBlueprintsByExpansionId(expansion.id)).data;
 
