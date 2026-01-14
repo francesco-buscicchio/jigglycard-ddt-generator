@@ -10,7 +10,6 @@ const app = express();
 (async () => {
   try {
     await connectDB();
-
     app.listen(PORT, () => {
       console.log(`Server attivo su http://localhost:${PORT}`);
     });

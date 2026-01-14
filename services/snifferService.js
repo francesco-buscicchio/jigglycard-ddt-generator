@@ -4,6 +4,7 @@ const { saveProduct } = require("../services/productService.js");
 const {
   savePriceAlert,
   clearPriceAlert,
+  hasPriceAlertByBlueprintAndPrice,
 } = require("../services/priceAlertService");
 const {
   saveMyPriceAlert,
@@ -12,6 +13,58 @@ const {
 const { buildCardLinks } = require("../helper/urlGenerator.js");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const ALLOWED_LANGS = ["it", "jp", "jap", "en"];
+const GRADED_PRICE_THRESHOLD_CENTS = 1500;
+
+function detectListingLanguage(listing) {
+  const p = listing?.properties_hash ?? {};
+  return (
+    ALLOWED_LANGS.find(
+      (l) =>
+        l === p.language ||
+        l === p.pokemon_language ||
+        l === p.onepiece_language ||
+        l === p.dragonball_language
+    ) ?? null
+  );
+}
+
+async function logGradedLowPrice(item, blueprint, listing) {
+  if (!listing?.graded) return;
+  if (typeof listing.price_cents !== "number") return;
+  if (listing.price_cents > GRADED_PRICE_THRESHOLD_CENTS) return;
+
+  const alreadyExists = await hasPriceAlertByBlueprintAndPrice(
+    blueprint?.id ?? null,
+    listing.price_cents
+  );
+  if (alreadyExists) return;
+
+  const lang = detectListingLanguage(listing);
+  await savePriceAlert({
+    setName: item?.name ?? "",
+    blueprintName: blueprint?.name ?? "",
+    language: lang,
+    minorPrice: listing.price_cents,
+    secondPrice: null,
+    productId: listing?.id ?? null,
+    blueprintId: blueprint?.id ?? null,
+    userID: listing?.user?.id ?? null,
+    tcgID: item?.game_id ?? null,
+    urls: buildCardLinks(blueprint, listing),
+    collector_number: listing?.properties_hash?.collector_number ?? null,
+    timestamp: new Date(),
+    checked: false,
+    type: "Gradata a meno di 15 euro",
+  });
+  console.log(
+    `[GRADED-UNDER-15] ${item?.name ?? ""} - ${blueprint?.name ?? ""} | lang=${
+      lang ?? "n/a"
+    } | price=${listing.price_cents}c | seller=${
+      listing?.user?.username ?? "n/a"
+    } | id=${listing?.id ?? "n/a"}`
+  );
+}
 
 exports.copyProductsCardtrader = async () => {
   const expansions = (await cardtraderService.getExpansions()).data;
@@ -124,21 +177,16 @@ exports.sniffCardtraderProducts = async () => {
             val.properties_hash.condition === "Near Mint"
           );
         });
+        for (const listing of productData) {
+          await logGradedLowPrice(item, blueprint, listing);
+        }
+
         if (productData.length < 2) continue;
 
-        const allowedLang = ["it", "jp", "jap", "en"];
         const groups = new Map();
 
         for (const prod of productData) {
-          const p = prod.properties_hash ?? {};
-          const lang =
-            allowedLang.find(
-              (l) =>
-                l === p.language ||
-                l === p.pokemon_language ||
-                l === p.onepiece_language ||
-                l === p.dragonball_language
-            ) ?? null;
+          const lang = detectListingLanguage(prod);
 
           if (!lang) continue;
           if (!groups.has(lang)) groups.set(lang, []);
@@ -219,16 +267,7 @@ exports.checkMyProductsAgainstMarket = async () => {
 
       if (Math.abs(diffCents) >= 1) {
         // lingua calcolata con la logica allowedLang
-        const allowedLang = ["it", "jp", "jap", "en"];
-        const p = item.properties_hash ?? {};
-        const lang =
-          allowedLang.find(
-            (l) =>
-              l === p.language ||
-              l === p.pokemon_language ||
-              l === p.onepiece_language ||
-              l === p.dragonball_language
-          ) ?? null;
+        const lang = detectListingLanguage(item);
 
         console.log(
           `[MY-GAP] ${item?.expansion_name ?? ""} - ${
@@ -285,6 +324,12 @@ async function checkPriceDifferenceStandard(item, blueprint, lang, list) {
     return;
 
   if (minorPriceAlert < secondPrice) {
+    const alreadyExists = await hasPriceAlertByBlueprintAndPrice(
+      blueprint?.id ?? null,
+      minorPrice
+    );
+    if (alreadyExists) return;
+
     await savePriceAlert({
       setName: item.name,
       blueprintName: blueprint.name,
@@ -344,6 +389,12 @@ async function checkPriceDifferenceUSvsEU(item, blueprint, lang, list) {
     return;
 
   if (minorPriceAlert < secondPrice) {
+    const alreadyExists = await hasPriceAlertByBlueprintAndPrice(
+      blueprint?.id ?? null,
+      minorPrice
+    );
+    if (alreadyExists) return;
+
     await savePriceAlert({
       setName: item.name,
       blueprintName: blueprint.name,
@@ -380,6 +431,12 @@ async function checkLowPriceByRarity(item, blueprint, lang, list, configList) {
     // es: { name: "Illustration Rare", maxPrice: 51 }
     if (rarityLower === config.name.toLowerCase()) {
       if (prod.price_cents < config.maxPrice) {
+        const alreadyExists = await hasPriceAlertByBlueprintAndPrice(
+          blueprint?.id ?? null,
+          prod.price_cents
+        );
+        if (alreadyExists) return;
+
         await savePriceAlert({
           setName: item.name,
           blueprintName: blueprint.name,
