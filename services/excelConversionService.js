@@ -29,6 +29,7 @@ function getOfficeBinaryCandidates(sofficeBinaryPath) {
   return [
     sofficeBinaryPath,
     process.env.SOFFICE_BINARY_PATH,
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
     "/usr/bin/soffice",
     "/usr/bin/libreoffice",
     "/snap/bin/libreoffice",
@@ -104,8 +105,13 @@ async function executeExcelConversionTask(payload = {}, { task, signal } = {}) {
   const safeOriginalFilename =
     originalFilename || path.basename(String(uploadedFilePath || ""));
   const fileExtension = ensureAllowedExcelExtension(safeOriginalFilename);
-  const pdfFilename = `${path.basename(safeOriginalFilename, fileExtension)}.pdf`;
-  const pdfPath = path.join(outputDir, pdfFilename);
+  const uploadedFilename = path.basename(String(uploadedFilePath || ""));
+  const uploadedFileExtension = path.extname(uploadedFilename).toLowerCase();
+  const uploadedPdfFilename = `${path.basename(
+    uploadedFilename,
+    uploadedFileExtension || fileExtension,
+  )}.pdf`;
+  const originalPdfFilename = `${path.basename(safeOriginalFilename, fileExtension)}.pdf`;
 
   try {
     await fsPromises.mkdir(RESULT_DIRECTORY, { recursive: true });
@@ -120,18 +126,38 @@ async function executeExcelConversionTask(payload = {}, { task, signal } = {}) {
 
     throwIfAborted(signal, "Conversione Excel annullata.");
 
-    if (!fs.existsSync(pdfPath)) {
+    let resolvedPdfPath = path.join(outputDir, uploadedPdfFilename);
+    if (!fs.existsSync(resolvedPdfPath)) {
+      const fallbackOriginalPath = path.join(outputDir, originalPdfFilename);
+      if (fs.existsSync(fallbackOriginalPath)) {
+        resolvedPdfPath = fallbackOriginalPath;
+      } else {
+        const generatedPdfFiles = (await fsPromises.readdir(outputDir))
+          .filter((entry) => entry.toLowerCase().endsWith(".pdf"))
+          .sort();
+
+        if (generatedPdfFiles.length === 1) {
+          resolvedPdfPath = path.join(outputDir, generatedPdfFiles[0]);
+        } else {
+          throw new Error("Conversione completata ma PDF non trovato.");
+        }
+      }
+    }
+
+    const finalPdfFilename =
+      sanitizeFilename(originalPdfFilename) || sanitizeFilename(uploadedPdfFilename);
+    if (!fs.existsSync(resolvedPdfPath)) {
       throw new Error("Conversione completata ma PDF non trovato.");
     }
 
-    const artifactFilename = `${task.id}-${sanitizeFilename(pdfFilename)}`;
+    const artifactFilename = `${task.id}-${finalPdfFilename}`;
     const artifactPath = path.join(RESULT_DIRECTORY, artifactFilename);
-    await fsPromises.copyFile(pdfPath, artifactPath);
+    await fsPromises.copyFile(resolvedPdfPath, artifactPath);
 
     const stats = await fsPromises.stat(artifactPath);
     return {
       artifactPath,
-      filename: sanitizeFilename(pdfFilename),
+      filename: finalPdfFilename,
       contentType: "application/pdf",
       bytes: stats.size,
     };
