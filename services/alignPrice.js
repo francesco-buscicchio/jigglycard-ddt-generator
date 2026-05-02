@@ -1,22 +1,18 @@
 const fs = require("fs");
 const path = require("path");
-const cardtraderService = require("./cardTraderService");
+const {
+  ALIGN_PRICE_WORKERS,
+  ALIGN_PRICE_INTER_GAME_DELAY_MS,
+} = require("../config/config");
+const { createCardTraderService } = require("./cardTraderService");
+const { sleep, throwIfAborted } = require("../utils/abort");
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const BLOCKED_COUNTRIES = new Set(["US", "CA", "NZ"]);
 const MY_USERNAME = "Jigglycard";
 const POKEMON_GAME_ID = 5;
+const DRAGON_BALL_GAME_ID = 9;
+const ONE_PIECE_GAME_ID = 15;
 const JAPANESE_LANGS = new Set(["jp", "jap", "ja"]);
-const TEST_BLUEPRINT_ID = 277508; //350003; //;
-const PROPS_TO_MATCH = [
-  "condition",
-  "pokemon_reverse",
-  "pokemon_language",
-  "signed",
-  "altered",
-  "first_edition",
-  "graded",
-];
 const CONDITION_ORDER = [
   "near mint",
   "slightly played",
@@ -24,7 +20,55 @@ const CONDITION_ORDER = [
   "played",
   "poor",
 ];
-const ALIGN_PRICE_WORKERS = 12;
+const GAME_CONFIGS = {
+  pokemon: {
+    slug: "pokemon",
+    gameId: POKEMON_GAME_ID,
+    languageKey: "pokemon_language",
+    allowedLanguages: new Set(["jp", "it", "en"]),
+    matchKeys: [
+      "condition",
+      "pokemon_reverse",
+      "pokemon_language",
+      "signed",
+      "altered",
+      "first_edition",
+      "graded",
+    ],
+    minAllowedPriceCents: (item) => getPokemonMinAllowedPriceCents(item),
+  },
+  onepiece: {
+    slug: "onepiece",
+    gameId: ONE_PIECE_GAME_ID,
+    languageKey: "onepiece_language",
+    allowedLanguages: new Set(["jp", "en"]),
+    matchKeys: [
+      "condition",
+      "onepiece_language",
+      "signed",
+      "altered",
+      "graded",
+      "tournament_legal",
+    ],
+    minAllowedPriceCents: () => 0,
+  },
+  dragonball: {
+    slug: "dragonball",
+    gameId: DRAGON_BALL_GAME_ID,
+    languageKey: "dragonball_language",
+    allowedLanguages: new Set(["en", "jp"]),
+    matchKeys: [
+      "condition",
+      "dragonball_language",
+      "signed",
+      "altered",
+      "graded",
+      "tournament_legal",
+      "dragonball_foil",
+    ],
+    minAllowedPriceCents: () => 0,
+  },
+};
 
 function feeCentsFromPrice(priceCents) {
   const price = priceCents / 100;
@@ -46,18 +90,18 @@ function netPriceCents(priceCents) {
   return net < 0 ? 0 : net;
 }
 
-function propertiesMatch(listingProps, myProps) {
+function propertiesMatch(listingProps, myProps, matchKeys) {
   const lp = listingProps || {};
   const mp = myProps || {};
-  return PROPS_TO_MATCH.every((key) => lp[key] === mp[key]);
+  return matchKeys.every((key) => lp[key] === mp[key]);
 }
 
-function propertiesMatchWithoutCondition(listingProps, myProps) {
+function propertiesMatchWithoutCondition(listingProps, myProps, matchKeys) {
   let lp = { ...listingProps } || {};
   let mp = { ...myProps } || {};
   lp.condition = "";
   mp.condition = "";
-  return PROPS_TO_MATCH.every((key) => lp[key] === mp[key]);
+  return matchKeys.every((key) => lp[key] === mp[key]);
 }
 
 function gradedMatch(listing, item) {
@@ -120,7 +164,7 @@ function getConditionBounds(condition, listings) {
   };
 }
 
-function minAllowedPriceCents(item) {
+function getPokemonMinAllowedPriceCents(item) {
   const rarity = getRarity(item).toLowerCase();
   const productName = normalizeText(item?.name_en ?? item?.name);
   const hasFixedExOrV =
@@ -128,7 +172,6 @@ function minAllowedPriceCents(item) {
     (productName.includes(" ex") || productName.includes(" v"));
 
   if (hasFixedExOrV) {
-    console.log("Min price for fixed ex/v: 25");
     return 25;
   }
 
@@ -138,18 +181,98 @@ function minAllowedPriceCents(item) {
   if (condition !== "near mint") return 0;
 
   if (rarity === "illustration rare") {
-    console.log("Min price for illustration rare: 150");
     return 150;
   }
   if (rarity === "shiny holo rare") {
-    console.log("Min price for shiny holo rare: 80");
     return 80;
   }
   if (rarity === "ultra rare" || rarity === "rare ace") {
-    console.log("Min price for ultra rare: 25");
     return 25;
   }
   return 0;
+}
+
+function getItemLanguage(item, gameConfig) {
+  return normalizeText(item?.properties_hash?.[gameConfig.languageKey]);
+}
+
+function isEligibleItemForGame(item, gameConfig) {
+  return (
+    item?.game_id === gameConfig.gameId &&
+    gameConfig.allowedLanguages.has(getItemLanguage(item, gameConfig))
+  );
+}
+
+function filterListingsForItem(item, sourceListings, gameConfig) {
+  if (item?.graded) return [];
+
+  const itemCondition = getCondition(item?.properties_hash?.condition);
+  let listings = sourceListings;
+
+  if (itemCondition === "near mint") {
+    return listings.filter(
+      (listing) =>
+        propertiesMatch(
+          listing?.properties_hash,
+          item?.properties_hash,
+          gameConfig.matchKeys,
+        ) && gradedMatch(listing, item),
+    );
+  }
+
+  listings = listings.filter(
+    (listing) =>
+      propertiesMatchWithoutCondition(
+        listing?.properties_hash,
+        item?.properties_hash,
+        gameConfig.matchKeys,
+      ) && gradedMatch(listing, item),
+  );
+
+  if (itemCondition === "slightly played") {
+    return listings.filter((listing) => {
+      const condition = getCondition(listing?.properties_hash?.condition);
+      return condition === "slightly played" || condition === "near mint";
+    });
+  }
+
+  if (itemCondition === "moderately played") {
+    return listings.filter((listing) => {
+      const condition = getCondition(listing?.properties_hash?.condition);
+      return (
+        condition === "moderately played" ||
+        condition === "slightly played" ||
+        condition === "near mint"
+      );
+    });
+  }
+
+  if (itemCondition === "played") {
+    return listings.filter((listing) => {
+      const condition = getCondition(listing?.properties_hash?.condition);
+      return (
+        condition === "played" ||
+        condition === "moderately played" ||
+        condition === "slightly played" ||
+        condition === "near mint"
+      );
+    });
+  }
+
+  if (itemCondition === "poor") {
+    return listings.filter((listing) => {
+      const condition = getCondition(listing?.properties_hash?.condition);
+      return (
+        condition === "poor" ||
+        condition === "played" ||
+        condition === "moderately played" ||
+        condition === "slightly played" ||
+        condition === "near mint"
+      );
+    });
+  }
+
+  return listings;
 }
 
 function csvEscape(value) {
@@ -252,272 +375,54 @@ function resolveCartProductId(listing) {
   return null;
 }
 
-async function waitBeforeCardTraderRequest(delayMs, label) {
-  console.log(`[IR-CART] Attendo ${delayMs}ms prima della richiesta: ${label}`);
-  await sleep(delayMs);
+function filterMarketplaceListings(listings = []) {
+  return listings.filter((listing) => {
+    const hubOk = listing?.user?.can_sell_via_hub === true;
+    const countryOk = !BLOCKED_COUNTRIES.has(listing?.user?.country_code);
+    return hubOk && countryOk;
+  });
 }
 
-exports.addJapaneseIllustrationRaresToCart = async (options = {}) => {
-  const {
-    quantity = 1000,
-    dryRun = false,
-    delayMs = 1000,
-    expansionLimit = 1000,
-  } = options;
+function getExpansionId(item) {
+  const expansionId = Number(item?.expansion?.id);
+  return Number.isFinite(expansionId) ? expansionId : null;
+}
 
+async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
+  const cardtraderService = createCardTraderService(runtimeConfig);
+  const taskSignal = runtimeConfig.signal;
+  const exportStartedAt = Date.now();
   console.log(
-    `[IR-CART] Avvio ricerca prodotti | filtri=Illustration Rare < EUR 1, Ultra Rare < EUR 0.25 | quantity=${quantity} | dryRun=${dryRun} | expansionLimit=${expansionLimit}`,
+    `[ALIGN-PRICE][${gameConfig.slug}] Avvio allineamento per game_id=${gameConfig.gameId}`,
   );
 
-  let cartProductIds = new Set();
-  try {
-    await waitBeforeCardTraderRequest(delayMs, "getCart");
-    console.log("[IR-CART] Lettura carrello corrente");
-    const cartRes = await cardtraderService.getCart();
-    cartProductIds = extractCartProductIds(cartRes?.data);
-    console.log(
-      `[IR-CART] Prodotti già presenti nel carrello: ${cartProductIds.size}`,
-    );
-  } catch (error) {
-    console.error(
-      "[IR-CART] Impossibile leggere il carrello corrente, continuo senza deduplica sul carrello:",
-      error?.response?.data ?? error?.message ?? error,
-    );
-  }
-
-  await waitBeforeCardTraderRequest(delayMs, "getExpansions");
-  console.log("[IR-CART] Lettura espansioni CardTrader");
-  const expansionsRes = await cardtraderService.getExpansions();
-  const expansions = Array.isArray(expansionsRes?.data)
-    ? expansionsRes.data
-    : [];
-  const pokemonExpansions = expansions.filter(
-    (expansion) =>
-      expansion?.game_id === POKEMON_GAME_ID &&
-      !normalizeText(expansion?.name).includes("deck"),
-  );
-  const selectedExpansions = pokemonExpansions.slice(-expansionLimit);
-
-  console.log(
-    `[IR-CART] Espansioni totali=${expansions.length} | espansioni Pokemon senza deck=${pokemonExpansions.length} | ultime selezionate=${selectedExpansions.length}`,
-  );
-
-  const seenProductIds = new Set();
-  const summary = {
-    expansionsChecked: 0,
-    blueprintsChecked: 0,
-    candidateListings: 0,
-    addedProducts: 0,
-    skippedAlreadyInCart: 0,
-    skippedDuplicatedInRun: 0,
-    skippedInvalid: 0,
-    skippedNoMatch: 0,
-  };
-
-  for (const expansion of selectedExpansions) {
-    summary.expansionsChecked += 1;
-    console.log(
-      `[IR-CART] [Expansion ${summary.expansionsChecked}/${
-        selectedExpansions.length
-      }] ${expansion?.name ?? "n/a"} (#${expansion?.id ?? "n/a"})`,
-    );
-
-    await waitBeforeCardTraderRequest(
-      delayMs,
-      `getBlueprintsByExpansionId(${expansion.id})`,
-    );
-    const blueprintsRes = await cardtraderService.getBlueprintsByExpansionId(
-      expansion.id,
-    );
-    const blueprints = Array.isArray(blueprintsRes?.data)
-      ? blueprintsRes.data
-      : [];
-    const targetBlueprints = blueprints.filter(
-      (blueprint) => getTargetBlueprintType(blueprint) !== null,
-    );
-
-    console.log(
-      `[IR-CART] Blueprint trovati=${blueprints.length} | target rarity=${targetBlueprints.length}`,
-    );
-
-    if (targetBlueprints.length === 0) {
-      continue;
-    }
-
-    await waitBeforeCardTraderRequest(
-      delayMs,
-      `getMarketplaceProductsByExpansionId(${expansion.id})`,
-    );
-    console.log(
-      `[IR-CART] Scarico tutti i prodotti marketplace dell'espansione #${expansion.id}`,
-    );
-    const marketplaceRes =
-      await cardtraderService.getMarketplaceProductsByExpansionId(expansion.id);
-    const marketplaceByBlueprint =
-      marketplaceRes?.data && typeof marketplaceRes.data === "object"
-        ? marketplaceRes.data
-        : {};
-
-    for (const blueprint of targetBlueprints) {
-      summary.blueprintsChecked += 1;
-      const targetBlueprintType = getTargetBlueprintType(blueprint);
-      const listings = Array.isArray(marketplaceByBlueprint[blueprint.id])
-        ? marketplaceByBlueprint[blueprint.id]
-        : [];
-
-      console.log(
-        `[IR-CART] Analizzo blueprint #${blueprint.id} | ${
-          blueprint?.name ?? "n/a"
-        } | rarity=${targetBlueprintType?.rarity ?? "n/a"} | listing=${
-          listings.length
-        }`,
-      );
-
-      const matchingListings = listings
-        .filter((listing) => {
-          const hasValidPrice = Number.isFinite(Number(listing?.price_cents));
-          const hasQuantity = Number(listing?.quantity ?? 1) > 0;
-          const canSellViaHub = listing?.user?.can_sell_via_hub === true;
-          return (
-            hasValidPrice &&
-            hasQuantity &&
-            canSellViaHub &&
-            isNearMintJapaneseListing(listing) &&
-            Number(listing.price_cents) < targetBlueprintType.maxPriceCents
-          );
-        })
-        .sort((a, b) => a.price_cents - b.price_cents);
-
-      if (matchingListings.length === 0) {
-        summary.skippedNoMatch += 1;
-        console.log(
-          `[IR-CART] Nessun listing compatibile per blueprint #${blueprint.id}`,
-        );
-        continue;
-      }
-
-      console.log(
-        `[IR-CART] Listing compatibili per blueprint #${blueprint.id}: ${
-          matchingListings.length
-        } | rarity=${
-          targetBlueprintType?.rarity ?? "n/a"
-        } | soglia=${formatEuroFromCents(targetBlueprintType?.maxPriceCents)}`,
-      );
-
-      for (const listing of matchingListings) {
-        summary.candidateListings += 1;
-
-        const productId = resolveCartProductId(listing);
-        const listingId = Number(listing?.id);
-        const priceCents = Number(listing?.price_cents);
-        const seller = listing?.user?.username ?? "n/a";
-        const viaCardTraderZero = Boolean(listing?.user?.can_sell_via_hub);
-
-        if (!Number.isFinite(productId) || !Number.isFinite(priceCents)) {
-          summary.skippedInvalid += 1;
-          console.log(
-            `[IR-CART] Skip listing non valido | blueprint=#${
-              blueprint.id
-            } | listingId=${listing?.id ?? "n/a"} | productId=${
-              listing?.product_id ?? listing?.product?.id ?? "n/a"
-            } | price=${listing?.price_cents ?? "n/a"}`,
-          );
-          continue;
-        }
-
-        if (seenProductIds.has(productId)) {
-          summary.skippedDuplicatedInRun += 1;
-          console.log(
-            `[IR-CART] Skip prodotto già processato in questa esecuzione | productId=${productId}`,
-          );
-          continue;
-        }
-
-        if (cartProductIds.has(productId)) {
-          summary.skippedAlreadyInCart += 1;
-          seenProductIds.add(productId);
-          console.log(
-            `[IR-CART] Skip prodotto già presente nel carrello | productId=${productId} | listingId=${
-              Number.isFinite(listingId) ? listingId : "n/a"
-            } | seller=${seller} | price=${formatEuroFromCents(priceCents)}`,
-          );
-          continue;
-        }
-
-        console.log(
-          `[IR-CART] Candidato | expansion=${
-            expansion?.name ?? "n/a"
-          } | blueprint=${blueprint?.name ?? "n/a"} | rarity=${
-            targetBlueprintType?.rarity ?? "n/a"
-          } | productId=${productId} | listingId=${
-            Number.isFinite(listingId) ? listingId : "n/a"
-          } | seller=${seller} | price=${formatEuroFromCents(
-            priceCents,
-          )} | ctZero=${viaCardTraderZero}`,
-        );
-
-        if (dryRun) {
-          seenProductIds.add(productId);
-          console.log(
-            `[IR-CART] Dry run attivo, nessuna aggiunta eseguita | productId=${productId} | listingId=${
-              Number.isFinite(listingId) ? listingId : "n/a"
-            }`,
-          );
-          continue;
-        }
-
-        try {
-          await waitBeforeCardTraderRequest(
-            delayMs,
-            `addProductToCart(${productId})`,
-          );
-          await cardtraderService.addProductToCart({
-            productId,
-            quantity,
-            price: priceCents / 100,
-            via_cardtrader_zero: viaCardTraderZero,
-          });
-          seenProductIds.add(productId);
-          cartProductIds.add(productId);
-          summary.addedProducts += 1;
-          console.log(
-            `[IR-CART] Aggiunto al carrello | productId=${productId} | listingId=${
-              Number.isFinite(listingId) ? listingId : "n/a"
-            } | seller=${seller} | price=${formatEuroFromCents(priceCents)}`,
-          );
-        } catch (error) {
-          console.error(
-            `[IR-CART] Errore aggiunta al carrello | productId=${productId} | listingId=${
-              Number.isFinite(listingId) ? listingId : "n/a"
-            }`,
-            error?.response?.data ?? error?.message ?? error,
-          );
-        }
-      }
-    }
-  }
-
-  console.log(
-    `[IR-CART] Fine esecuzione | expansions=${summary.expansionsChecked} | blueprints=${summary.blueprintsChecked} | candidateListings=${summary.candidateListings} | added=${summary.addedProducts} | alreadyInCart=${summary.skippedAlreadyInCart} | duplicatedInRun=${summary.skippedDuplicatedInRun} | invalid=${summary.skippedInvalid} | noMatchBlueprints=${summary.skippedNoMatch}`,
-  );
-
-  return summary;
-};
-
-exports.alignPrices = async () => {
+  throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
   const exportRes = await cardtraderService.getMyProducts();
   const myItems = Array.isArray(exportRes?.data)
-    ? exportRes.data //.filter((item) => item?.blueprint_id === TEST_BLUEPRINT_ID)
+    ? exportRes.data.filter(
+        (item) => isEligibleItemForGame(item, gameConfig),
+        //&&
+        //  Number(item?.blueprint_id) === TEST_BLUEPRINT_ID,
+      )
     : [];
+  const exportDurationSeconds = Math.max(
+    0,
+    Math.round((Date.now() - exportStartedAt) / 1000),
+  );
   const totalItems = myItems.length;
   const rows = [];
-  const marketplaceCache = new Map();
+  const expansionMarketplaceCache = new Map();
+  const blueprintMarketplaceCache = new Map();
   let checkedItems = 0;
   let nextIndex = 0;
+  let processingStartedAt = null;
+  const uniqueExpansionCount = new Set(
+    myItems.map((item) => getExpansionId(item)).filter(Boolean),
+  ).size;
 
-  function getCachedMarketplace(blueprintId) {
-    if (!marketplaceCache.has(blueprintId)) {
-      marketplaceCache.set(
+  function getCachedMarketplaceByBlueprint(blueprintId) {
+    if (!blueprintMarketplaceCache.has(blueprintId)) {
+      blueprintMarketplaceCache.set(
         blueprintId,
         cardtraderService
           .getProduct(blueprintId)
@@ -526,102 +431,77 @@ exports.alignPrices = async () => {
               ? product.data[blueprintId]
               : [];
 
-            return listings.filter((listing) => {
-              const hubOk = listing?.user?.can_sell_via_hub === true;
-              const countryOk = !BLOCKED_COUNTRIES.has(
-                listing?.user?.country_code,
-              );
-              return hubOk && countryOk;
-            });
+            return filterMarketplaceListings(listings);
           })
           .catch((error) => {
-            marketplaceCache.delete(blueprintId);
+            blueprintMarketplaceCache.delete(blueprintId);
             throw error;
           }),
       );
     }
 
-    return marketplaceCache.get(blueprintId);
+    return blueprintMarketplaceCache.get(blueprintId);
   }
 
-  function isEligibleLanguage(item) {
-    return (
-      item?.properties_hash?.pokemon_language === "jp" ||
-      item?.properties_hash?.pokemon_language === "it"
-    );
-  }
+  function getCachedMarketplaceByExpansion(expansionId) {
+    if (!expansionMarketplaceCache.has(expansionId)) {
+      expansionMarketplaceCache.set(
+        expansionId,
+        cardtraderService
+          .getMarketplaceProductsByExpansionId(expansionId)
+          .then((product) => {
+            const byBlueprint = new Map();
+            const groupedListings =
+              product?.data && typeof product.data === "object"
+                ? product.data
+                : {};
 
-  function filterListingsForItem(item, sourceListings) {
-    if (item?.graded) return [];
+            for (const [rawBlueprintId, listings] of Object.entries(
+              groupedListings,
+            )) {
+              const blueprintId = Number(rawBlueprintId);
+              if (!Number.isFinite(blueprintId)) continue;
+              byBlueprint.set(
+                blueprintId,
+                filterMarketplaceListings(
+                  Array.isArray(listings) ? listings : [],
+                ),
+              );
+            }
 
-    const itemCondition = getCondition(item?.properties_hash?.condition);
-    let listings = sourceListings;
-
-    if (itemCondition === "near mint") {
-      return listings.filter(
-        (listing) =>
-          propertiesMatch(listing?.properties_hash, item?.properties_hash) &&
-          gradedMatch(listing, item),
+            return byBlueprint;
+          })
+          .catch((error) => {
+            console.warn(
+              `[ALIGN-PRICE][${gameConfig.slug}] Fallback fetch per blueprint: expansion_id=${expansionId} (${error.message})`,
+            );
+            return null;
+          }),
       );
     }
 
-    listings = listings.filter(
-      (listing) =>
-        propertiesMatchWithoutCondition(
-          listing?.properties_hash,
-          item?.properties_hash,
-        ) && gradedMatch(listing, item),
-    );
+    return expansionMarketplaceCache.get(expansionId);
+  }
 
-    if (itemCondition === "slightly played") {
-      return listings.filter((listing) => {
-        const condition = getCondition(listing?.properties_hash?.condition);
-        return condition === "slightly played" || condition === "near mint";
-      });
+  async function getCachedMarketplace(item) {
+    const blueprintId = Number(item?.blueprint_id);
+    if (!Number.isFinite(blueprintId)) return [];
+
+    const expansionId = getExpansionId(item);
+    if (expansionId !== null) {
+      const expansionMarketplace = await getCachedMarketplaceByExpansion(
+        expansionId,
+      );
+      if (expansionMarketplace instanceof Map) {
+        return expansionMarketplace.get(blueprintId) ?? [];
+      }
     }
 
-    if (itemCondition === "moderately played") {
-      return listings.filter((listing) => {
-        const condition = getCondition(listing?.properties_hash?.condition);
-        return (
-          condition === "moderately played" ||
-          condition === "slightly played" ||
-          condition === "near mint"
-        );
-      });
-    }
-
-    if (itemCondition === "played") {
-      return listings.filter((listing) => {
-        const condition = getCondition(listing?.properties_hash?.condition);
-        return (
-          condition === "played" ||
-          condition === "moderately played" ||
-          condition === "slightly played" ||
-          condition === "near mint"
-        );
-      });
-    }
-
-    if (itemCondition === "poor") {
-      return listings.filter((listing) => {
-        const condition = getCondition(listing?.properties_hash?.condition);
-        return (
-          condition === "poor" ||
-          condition === "played" ||
-          condition === "moderately played" ||
-          condition === "slightly played" ||
-          condition === "near mint"
-        );
-      });
-    }
-
-    return listings;
+    return getCachedMarketplaceByBlueprint(blueprintId);
   }
 
   async function processItem(item) {
-    if (item?.game_id !== POKEMON_GAME_ID || !isEligibleLanguage(item)) return;
-
+    throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
     const blueprintId = item?.blueprint_id;
     if (!blueprintId) return;
 
@@ -629,10 +509,13 @@ exports.alignPrices = async () => {
     const myNetCents = Number.isFinite(myPriceCents) ? myPriceCents : null;
 
     try {
-      const cachedListings = await getCachedMarketplace(blueprintId);
-      const listings = filterListingsForItem(item, cachedListings).sort(
-        (a, b) => a.price_cents - b.price_cents,
-      );
+      const cachedListings = await getCachedMarketplace(item);
+      throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
+      const listings = filterListingsForItem(
+        item,
+        cachedListings,
+        gameConfig,
+      ).sort((a, b) => a.price_cents - b.price_cents);
 
       if (listings.length === 0) return;
 
@@ -651,7 +534,7 @@ exports.alignPrices = async () => {
         typeof competitorNetCents === "number"
           ? Math.max(2, competitorNetCents - 1)
           : null;
-      const minPriceCents = minAllowedPriceCents(item);
+      const minPriceCents = gameConfig.minAllowedPriceCents(item);
       const targetNetCents =
         typeof targetNetCentsRaw === "number"
           ? Math.max(targetNetCentsRaw, minPriceCents)
@@ -691,20 +574,35 @@ exports.alignPrices = async () => {
       const currentIndex = nextIndex;
       if (currentIndex >= totalItems) return;
       nextIndex += 1;
+      throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
+
+      await processItem(myItems[currentIndex]);
 
       checkedItems += 1;
       if (checkedItems % 50 === 0 || checkedItems === totalItems) {
-        const percent =
-          totalItems > 0
-            ? ((checkedItems / totalItems) * 100).toFixed(2)
-            : "0.00";
-        const percentIt = percent.replace(".", ",");
+        const startedAt = processingStartedAt ?? Date.now();
+        const elapsedSeconds = Math.max(
+          1,
+          Math.round((Date.now() - startedAt) / 1000),
+        );
+        const itemsPerSecond = checkedItems / elapsedSeconds;
+        const remainingItems = Math.max(0, totalItems - checkedItems);
+        const etaSeconds =
+          itemsPerSecond > 0
+            ? Math.round(remainingItems / itemsPerSecond)
+            : null;
+        const rateText = itemsPerSecond.toFixed(2).replace(".", ",");
+        const etaText =
+          etaSeconds === null
+            ? "n/a"
+            : `${Math.floor(etaSeconds / 60)}m ${String(
+                etaSeconds % 60,
+              ).padStart(2, "0")}s`;
+
         console.log(
-          `[ALIGN-PRICE] ${checkedItems}/${totalItems} prezzi controllati, step: ${percentIt}%`,
+          `[ALIGN-PRICE][${gameConfig.slug}] ${checkedItems}/${totalItems} prezzi controllati | speed: ${rateText} item/s | eta: ${etaText}`,
         );
       }
-
-      await processItem(myItems[currentIndex]);
     }
   }
 
@@ -712,9 +610,11 @@ exports.alignPrices = async () => {
     1,
     Math.min(ALIGN_PRICE_WORKERS, totalItems || 1),
   );
-  await Promise.all(
-    Array.from({ length: workerCount }, () => worker()),
+  processingStartedAt = Date.now();
+  console.log(
+    `[ALIGN-PRICE][${gameConfig.slug}] Export completato in ${exportDurationSeconds}s | items=${totalItems} | expansions=${uniqueExpansionCount} | workers=${workerCount}`,
   );
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   const headers = [
     "blueprint_id",
@@ -742,7 +642,37 @@ exports.alignPrices = async () => {
     lines.push(headers.map((h) => csvEscape(row[h])).join(","));
   }
 
-  const outPath = path.join(__dirname, "..", "excel_export", "align-price.csv");
+  const outPath = path.join(
+    __dirname,
+    "..",
+    "excel_export",
+    `align-price-${gameConfig.slug}.csv`,
+  );
   fs.writeFileSync(outPath, lines.join("\n"), "utf8");
-  console.log(`[ALIGN-PRICE] CSV scritto in ${outPath}`);
+  console.log(`[ALIGN-PRICE][${gameConfig.slug}] CSV scritto in ${outPath}`);
+
+  return { totalItems, rows: rows.length, outPath };
+}
+
+exports.alignPokemonPrices = async (runtimeConfig = {}) =>
+  alignPricesForGame(GAME_CONFIGS.pokemon, runtimeConfig);
+
+exports.alignDragonBallPrices = async (runtimeConfig = {}) =>
+  alignPricesForGame(GAME_CONFIGS.dragonball, runtimeConfig);
+
+exports.alignOnePiecePrices = async (runtimeConfig = {}) =>
+  alignPricesForGame(GAME_CONFIGS.onepiece, runtimeConfig);
+
+exports.alignPrices = async (runtimeConfig = {}) => {
+  const results = [];
+  results.push(await exports.alignPokemonPrices(runtimeConfig));
+  if (ALIGN_PRICE_INTER_GAME_DELAY_MS > 0) {
+    await sleep(ALIGN_PRICE_INTER_GAME_DELAY_MS, runtimeConfig.signal);
+  }
+  results.push(await exports.alignDragonBallPrices(runtimeConfig));
+  if (ALIGN_PRICE_INTER_GAME_DELAY_MS > 0) {
+    await sleep(ALIGN_PRICE_INTER_GAME_DELAY_MS, runtimeConfig.signal);
+  }
+  results.push(await exports.alignOnePiecePrices(runtimeConfig));
+  return results;
 };

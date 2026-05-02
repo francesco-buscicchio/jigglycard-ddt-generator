@@ -1,19 +1,8 @@
-import axios from "axios";
-import { MongoClient } from "mongodb";
+const { getDB } = require("../config/db");
+const { createCardTraderService } = require("../services/cardTraderService");
+const { sleep, throwIfAborted } = require("./abort");
 
-const MONGO_URI = process.env.MONGODB_URI;
-const CARDTRADER_API_BASE_URL = process.env.CARDTRADER_API_BASE_URL;
-const CARDTRADER_TOKEN = process.env.CARDTRADER_TOKEN;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const headers = {
-  headers: {
-    Authorization: `Bearer ${CARDTRADER_TOKEN}`,
-  },
-};
-
-const mapBoosterData = (booster) => {
+function mapBoosterData(booster) {
   return {
     id: booster.id,
     name: booster.name,
@@ -23,71 +12,72 @@ const mapBoosterData = (booster) => {
       : 0,
     image_url: booster.image_url,
   };
-};
+}
 
-const insertBoosterInToMongo = async (boosterJP) => {
-  const client = new MongoClient(MONGO_URI);
+async function insertBoosterInMongo(boosterJP, runtimeConfig = {}) {
+  const db = await getDB({
+    mongoUri: runtimeConfig.mongoUri,
+    mongodbUri: runtimeConfig.mongodbUri,
+    dbName: runtimeConfig.dbName,
+  });
+  const collection = db.collection("booster_jp");
 
-  try {
-    await client.connect();
-    const db = client.db("CMS");
-    const collection = db.collection("booster_jp");
-
-    const data = await collection.find().toArray();
-
-    for (let item of boosterJP) {
-      const indexBooster = data.findIndex((val) => {
-        return val.id === item.id;
-      });
-      if (indexBooster === -1) await collection.insertOne(item);
-    }
-
-    console.log("✅ Booster JP inseriti in MongoDB!");
-  } catch (err) {
-    console.error("❌ Errore MongoDB:", err);
-  } finally {
-    await client.close();
+  if (boosterJP.length === 0) {
+    return { scanned: 0, inserted: 0 };
   }
-};
 
-const getExpansions = async () => {
-  const url = `${CARDTRADER_API_BASE_URL}/expansions`;
-  const result = await axios.get(url, headers);
-  return result;
-};
+  const bulkOperations = boosterJP.map((item) => ({
+    updateOne: {
+      filter: { id: item.id },
+      update: { $setOnInsert: item },
+      upsert: true,
+    },
+  }));
 
-const getBlueprintsByExpansionId = async (expansion_id) => {
-  const url = `${CARDTRADER_API_BASE_URL}/blueprints/export?expansion_id=${expansion_id}`;
-  const result = await axios.get(url, headers);
-  return result;
-};
+  const result = await collection.bulkWrite(bulkOperations, { ordered: false });
+  const inserted = Number(result.upsertedCount) || 0;
 
-export const updateBooster = async () => {
+  console.log(`✅ Booster JP inseriti in MongoDB: ${inserted}`);
+  return { scanned: boosterJP.length, inserted };
+}
+
+async function updateBooster(runtimeConfig = {}) {
+  const cardTrader = createCardTraderService(runtimeConfig);
+  const signal = runtimeConfig.signal;
+
   const boosterJp = [];
-  const expansions = (await getExpansions()).data;
+  throwIfAborted(signal, "Update booster annullato.");
+  const expansions = (await cardTrader.getExpansions()).data;
+  const pokemonExpansions = expansions.filter((value) => value.game_id === 5);
 
-  const pkm_expansion = expansions.filter((val) => val.game_id === 5);
+  for (const expansion of pokemonExpansions) {
+    throwIfAborted(signal, "Update booster annullato.");
+    await sleep(500, signal);
+    const blueprints = (await cardTrader.getBlueprintsByExpansionId(expansion.id))
+      .data;
 
-  for (let expansion of pkm_expansion) {
-    await sleep(500);
-    const blueprints = (await getBlueprintsByExpansionId(expansion.id)).data;
+    const filteredBoosters = blueprints.filter((value) => {
+      if (value.category_id !== 66) return false;
+      if (!Array.isArray(value.editable_properties)) return false;
 
-    const filterBooster = blueprints.filter((val) => {
-      if (val.category_id !== 66) return false;
-      if (!Array.isArray(val.editable_properties)) return false;
-
-      const langProp = val.editable_properties.find(
-        (p) => p.name === "pokemon_language"
+      const langProp = value.editable_properties.find(
+        (property) => property.name === "pokemon_language",
       );
 
       return langProp?.possible_values?.includes("jp");
     });
 
-    if (filterBooster.length > 0) {
-      for (let booster of filterBooster)
-        boosterJp.push(mapBoosterData(booster));
+    for (const booster of filteredBoosters) {
+      boosterJp.push(mapBoosterData(booster));
     }
   }
 
-  insertBoosterInToMongo(boosterJp);
-};
+  const mongoResult = await insertBoosterInMongo(boosterJp, runtimeConfig);
+  return {
+    expansionsChecked: pokemonExpansions.length,
+    boostersFound: boosterJp.length,
+    ...mongoResult,
+  };
+}
+
+module.exports = { updateBooster };

@@ -1,12 +1,12 @@
 const { getDB } = require("../config/db");
 
-async function clearMyPriceAlert() {
-  const db = await getDB();
+async function clearMyPriceAlert(dbOptions = {}) {
+  const db = await getDB(dbOptions);
   await db.collection("myErrorPriceAlert").deleteMany();
 }
 
-async function saveMyPriceAlert(alert) {
-  const db = await getDB();
+async function saveMyPriceAlert(alert, dbOptions = {}) {
+  const db = await getDB(dbOptions);
 
   const { language, userID, productId, blueprintId, checked, ...rest } = alert;
 

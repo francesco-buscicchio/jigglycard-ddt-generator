@@ -1,64 +1,117 @@
 const express = require("express");
-const cron = require("node-cron");
-const { connectDB } = require("./config/db");
-const { PORT } = require("./config/config");
-const snifferService = require("./services/snifferService");
-const { updateBooster } = require("./utils/updateBoosterInMongo");
+const os = require("os");
+const { HOST, PORT } = require("./config/config");
+const originGate = require("./middleware/originGate");
+const apiAuth = require("./middleware/apiAuth");
+const requestContext = require("./middleware/requestContext");
+const requestQueue = require("./services/requestQueue");
+const cardtraderRoutes = require("./routes/cardtrader");
+const excelRoutes = require("./routes/excel");
+const taskRoutes = require("./routes/tasks");
 
-const app = express();
+function getServerUrls(host, port) {
+  const urls = new Set();
 
-(async () => {
-  try {
-    await connectDB();
-    app.listen(PORT, () => {
-      console.log(`Server attivo su http://localhost:${PORT}`);
-    });
+  if (host === "0.0.0.0" || host === "::") {
+    urls.add(`http://localhost:${port}`);
 
-    //PING CRON IN ESECUZIONE
-    cron.schedule("*/5 * * * *", () => {
-      console.log(`[CRON] Ping delle: ${new Date().toISOString()}`);
-    });
-    //SNIFFER ERRORI DI PREZZO
-    cron.schedule("0 */12 * * *", async () => {
-      console.log("Inizio Sniffer Errori Di Prezzo");
-      try {
-        await snifferService.sniffCardtraderProducts();
-        console.log("Fine Sniffer Errori Di Prezzo");
-      } catch (err) {
-        console.error("Errore nello Sniffer:", err);
+    const interfaces = os.networkInterfaces();
+    for (const networkInterface of Object.values(interfaces)) {
+      for (const details of networkInterface ?? []) {
+        if (details.family !== "IPv4" || details.internal) continue;
+        urls.add(`http://${details.address}:${port}`);
       }
-    });
-    //CONTROLLO ARTICOLI SOTTOPREZZATI
-    cron.schedule("0 */12 * * *", async () => {
-      console.log("Inizio Controllo Prodotti Sottoprezzati");
-      try {
-        await snifferService.checkMyProductsAgainstMarket();
-        console.log("Fine Controllo Prodotti Sottoprezzati");
-      } catch (err) {
-        console.error("Errore Controllo Prodotti Sottoprezzati:", err);
-      }
-    });
-    //AGGIORNAMENTO BOOSTER
-    cron.schedule("0 */24 * * *", async () => {
-      console.log("Inizio Update Booster Giapponesi");
-      try {
-        await updateBooster();
-        console.log("Fine Update Booster Giapponesi");
-      } catch (err) {
-        console.error("Errore nell'update dei Booster Giapponesi:", err);
-      }
-    });
-    //AGGIORNAMENTO PRODOTTI
-    cron.schedule("0 0 1 * *", async () => {
-      console.log("Inizio Aggiornamento Prodotti");
-      try {
-        await snifferService.copyProductsCardtrader();
-        console.log("Fine Aggiornamento Prodotti");
-      } catch (err) {
-        console.error("Errore Nell'Aggiornamento Prodotti:", err);
-      }
-    });
-  } catch (err) {
-    console.error("Errore inizializzazione:", err);
+    }
+
+    return [...urls];
   }
-})();
+
+  urls.add(`http://${host}:${port}`);
+  return [...urls];
+}
+
+function createApp() {
+  const app = express();
+
+  app.disable("x-powered-by");
+  app.use(express.json({ limit: "10mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+  app.get("/", (_req, res) => {
+    res.status(200).json({
+      status: "online",
+      mode: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  app.use("/api", originGate);
+
+  app.get("/api/health", (_req, res) => {
+    res.status(200).json({
+      status: "ok",
+      mode: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  app.use("/api", requestContext);
+  app.use("/api", apiAuth);
+
+  app.get("/api/queue/status", (_req, res) => {
+    res.status(200).json(requestQueue.getSnapshot());
+  });
+
+  app.use("/api/cardtrader", cardtraderRoutes);
+  app.use("/api/excel", excelRoutes);
+  app.use("/api", taskRoutes);
+
+  app.use((req, res) => {
+    res.status(404).json({
+      error: `Endpoint non trovato: ${req.method} ${req.originalUrl}`,
+      requestId: req.requestId ?? null,
+    });
+  });
+
+  app.use((error, req, res, _next) => {
+    console.error(
+      `[SERVER] Errore non gestito requestId=${req?.requestId ?? "n/a"}:`,
+      error,
+    );
+    res.status(500).json({
+      error: "Errore interno del server.",
+      requestId: req?.requestId ?? null,
+    });
+  });
+
+  return app;
+}
+
+function startServer() {
+  const app = createApp();
+  const server = app.listen(PORT, HOST, () => {
+    const address = server.address();
+    const resolvedPort =
+      typeof address === "object" && address?.port ? address.port : PORT;
+
+    console.log(
+      `[SERVER] Modalita=${process.env.NODE_ENV || "development"} | coda-concurrency=${requestQueue.concurrency}`,
+    );
+
+    for (const url of getServerUrls(HOST, resolvedPort)) {
+      console.log(`[SERVER] In ascolto su ${url}`);
+    }
+  });
+
+  return server;
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  createApp,
+  getServerUrls,
+  startServer,
+};

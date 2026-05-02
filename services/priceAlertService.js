@@ -1,12 +1,12 @@
 const { getDB } = require("../config/db");
 
-async function clearPriceAlert() {
-  const db = await getDB();
-  await await db.collection("errorPriceAlert").deleteMany({ checked: false });
+async function clearPriceAlert(dbOptions = {}) {
+  const db = await getDB(dbOptions);
+  await db.collection("errorPriceAlert").deleteMany({ checked: false });
 }
 
-async function savePriceAlert(alert) {
-  const db = await getDB();
+async function savePriceAlert(alert, dbOptions = {}) {
+  const db = await getDB(dbOptions);
 
   const { language, userID, productId, blueprintId, checked, ...rest } = alert;
 
@@ -24,9 +24,13 @@ async function savePriceAlert(alert) {
   return !!result.upsertedCount; // true se ha inserito, false se già esisteva
 }
 
-async function hasPriceAlertByBlueprintAndPrice(blueprintId, minorPrice) {
+async function hasPriceAlertByBlueprintAndPrice(
+  blueprintId,
+  minorPrice,
+  dbOptions = {},
+) {
   if (blueprintId == null || minorPrice == null) return false;
-  const db = await getDB();
+  const db = await getDB(dbOptions);
   const existing = await db.collection("errorPriceAlert").findOne({
     blueprintId,
     minorPrice,
