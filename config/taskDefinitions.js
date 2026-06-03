@@ -21,6 +21,21 @@ const REQUIRED_FIELDS = [
   "description",
   "operationalNotes",
 ];
+const KNOWN_TASK_RESOURCES = new Set([
+  "cardtrader",
+  "database",
+  "libreoffice",
+  "filesystem",
+  "cpu-heavy",
+  "default",
+]);
+const KNOWN_CONCURRENCY_GROUPS = new Set([
+  "default",
+  "cardtrader-heavy",
+  "cardtrader-maintenance",
+  "excel",
+  "cpu-heavy",
+]);
 
 class TaskDefinitionValidationError extends Error {
   constructor(errors) {
@@ -265,8 +280,8 @@ const TASK_DEFINITIONS = [
     description: "Converte un file Excel caricato in PDF.",
     enabled: true,
     weight: 3,
-    resources: ["excel", "filesystem", "cpu-heavy"],
-    concurrencyGroup: "excel-conversion",
+    resources: ["libreoffice", "filesystem", "cpu-heavy"],
+    concurrencyGroup: "excel",
     rateLimitGroup: null,
     queueName: "default",
     estimatedDuration: "1-10m",
@@ -305,7 +320,13 @@ function describeIdempotency(idempotency = {}) {
     .join("; ");
 }
 
-function validateTaskDefinitions(definitions = TASK_DEFINITIONS) {
+function validateTaskDefinitions(
+  definitions = TASK_DEFINITIONS,
+  {
+    knownResources = KNOWN_TASK_RESOURCES,
+    knownConcurrencyGroups = KNOWN_CONCURRENCY_GROUPS,
+  } = {},
+) {
   const errors = [];
   const taskTypes = new Set();
   const endpoints = new Set();
@@ -340,10 +361,18 @@ function validateTaskDefinitions(definitions = TASK_DEFINITIONS) {
 
     if (!Array.isArray(definition?.resources) || definition.resources.length === 0) {
       errors.push(`${label}: resources mancante o vuoto`);
+    } else {
+      for (const resourceId of definition.resources) {
+        if (!knownResources.has(resourceId)) {
+          errors.push(`${label}: resource sconosciuta ${resourceId}`);
+        }
+      }
     }
 
     if (typeof definition?.concurrencyGroup !== "string" || !definition.concurrencyGroup) {
       errors.push(`${label}: concurrencyGroup mancante`);
+    } else if (!knownConcurrencyGroups.has(definition.concurrencyGroup)) {
+      errors.push(`${label}: concurrencyGroup sconosciuto ${definition.concurrencyGroup}`);
     }
 
     if (!Number.isFinite(Number(definition?.timeoutMs)) || Number(definition.timeoutMs) <= 0) {
@@ -374,13 +403,20 @@ function validateTaskDefinitions(definitions = TASK_DEFINITIONS) {
         errors.push(`${label}: rateLimitGroup CardTrader mancante`);
       }
     }
+
+    if (
+      String(definition?.taskType || "").startsWith("excel.") &&
+      !definition?.resources?.includes("libreoffice")
+    ) {
+      errors.push(`${label}: task Excel senza resource libreoffice`);
+    }
   });
 
   return errors;
 }
 
-function assertValidTaskDefinitions(definitions = TASK_DEFINITIONS) {
-  const errors = validateTaskDefinitions(definitions);
+function assertValidTaskDefinitions(definitions = TASK_DEFINITIONS, options = {}) {
+  const errors = validateTaskDefinitions(definitions, options);
   if (errors.length > 0) {
     throw new TaskDefinitionValidationError(errors);
   }
@@ -424,6 +460,8 @@ function validateRequiredRequestEnv(definition, requestEnv = {}) {
 }
 
 module.exports = {
+  KNOWN_CONCURRENCY_GROUPS,
+  KNOWN_TASK_RESOURCES,
   REQUIRED_FIELDS,
   TaskDefinitionValidationError,
   buildTenantFingerprint,

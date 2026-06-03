@@ -24,7 +24,7 @@ Verifica: `npm run docs:check`
 | cardtrader.align-prices-pokemon | /api/cardtrader/run/align-prices-pokemon | POST | Esegue l'allineamento prezzi solo per Pokemon. | 8 | `cardtrader` | cardtrader-heavy | 20m | 0 | required; dedupe-by-tenant; generated:tenant-fingerprint | Aggiorna prezzi solo per il catalogo Pokemon. |
 | cardtrader.sniff-cardtrader-products | /api/cardtrader/run/sniff-cardtrader-products | POST | Analizza il marketplace CardTrader e popola le segnalazioni di prezzo. | 5 | `cardtrader`, `database` | cardtrader-heavy | 30m | 1 | required; dedupe-by-tenant; generated:tenant-fingerprint | Rigenera le segnalazioni prezzo nel database; task intensivo su CardTrader. |
 | cardtrader.update-booster | /api/cardtrader/run/update-booster | POST | Aggiorna i booster giapponesi in MongoDB. | 6 | `cardtrader`, `database` | cardtrader-maintenance | 20m | 2 | required; dedupe-by-tenant; generated:tenant-fingerprint | Usa upsert nel DB per evitare duplicati booster. |
-| excel.convert-to-pdf | /api/excel/convert-to-pdf | POST | Converte un file Excel caricato in PDF. | 3 | `excel`, `filesystem`, `cpu-heavy` | excel-conversion | 10m | 0 | optional; client-key; header:Idempotency-Key | Salva l'artefatto PDF su disco e lo rende scaricabile via task result. |
+| excel.convert-to-pdf | /api/excel/convert-to-pdf | POST | Converte un file Excel caricato in PDF. | 3 | `libreoffice`, `filesystem`, `cpu-heavy` | excel | 10m | 0 | optional; client-key; header:Idempotency-Key | Salva l'artefatto PDF su disco e lo rende scaricabile via task result. |
 
 ## Endpoint Operativi
 

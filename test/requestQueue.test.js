@@ -7,6 +7,8 @@ const {
   RequestQueue,
 } = requestQueueModule;
 const {
+  KNOWN_CONCURRENCY_GROUPS,
+  KNOWN_TASK_RESOURCES,
   listTaskDefinitions,
   validateTaskDefinitions,
 } = require("../config/taskDefinitions");
@@ -394,7 +396,7 @@ test("un task rate-limited su CardTrader non blocca un task non CardTrader", asy
         description: "Card",
         weight: 1,
         resources: ["cardtrader"],
-        concurrencyGroup: "cardtrader-test",
+        concurrencyGroup: "cardtrader-heavy",
         rateLimitGroup: "cardtrader",
         timeoutMs: 5_000,
       }),
@@ -443,7 +445,7 @@ test("il lock CardTrader lascia partire altri task senza quella risorsa", async 
         description: "Card",
         weight: 1,
         resources: ["cardtrader"],
-        concurrencyGroup: "cardtrader-test",
+        concurrencyGroup: "cardtrader-heavy",
         rateLimitGroup: "cardtrader",
         timeoutMs: 5_000,
       }),
@@ -485,6 +487,98 @@ test("il lock CardTrader lascia partire altri task senza quella risorsa", async 
   await waitFor(() => cardStarted === 2);
   const firstTask = queue.getTask(first.task.id);
   assert.equal(firstTask.status, "completed");
+});
+
+test("un task LibreOffice non blocca task che non usano LibreOffice", async () => {
+  let excelStarted = false;
+  let localStarted = false;
+  const excelDeferred = createDeferred();
+  const localDeferred = createDeferred();
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "excel",
+        endpoint: "/excel",
+        weight: 1,
+        resources: ["libreoffice"],
+        concurrencyGroup: "excel",
+      }),
+      taskDefinition({
+        taskType: "local",
+        endpoint: "/local",
+        weight: 5,
+      }),
+    ],
+    { concurrency: 2 },
+  );
+
+  queue.registerHandler("excel", async () => {
+    excelStarted = true;
+    await excelDeferred.promise;
+  });
+  queue.registerHandler("local", async () => {
+    localStarted = true;
+    await localDeferred.promise;
+  });
+
+  queue.enqueue({ taskType: "excel" });
+  queue.enqueue({ taskType: "local" });
+
+  await waitFor(() => excelStarted && localStarted);
+  assert.equal(queue.getQueueStats().resources.libreoffice.inUse, 1);
+
+  localDeferred.resolve();
+  excelDeferred.resolve();
+  await waitFor(() => queue.listTasks({ statuses: ["completed"] }).length === 2);
+});
+
+test("un task bloccato da risorsa non blocca il task eseguibile successivo", async () => {
+  let cardStarted = 0;
+  let dbStarted = false;
+  const cardDeferred = createDeferred();
+  const dbDeferred = createDeferred();
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "card",
+        endpoint: "/card",
+        weight: 1,
+        resources: ["cardtrader"],
+        concurrencyGroup: "cardtrader-heavy",
+        rateLimitGroup: "cardtrader",
+      }),
+      taskDefinition({
+        taskType: "db",
+        endpoint: "/db",
+        weight: 5,
+        resources: ["database"],
+        concurrencyGroup: "default",
+      }),
+    ],
+    { concurrency: 2 },
+  );
+
+  queue.registerHandler("card", async () => {
+    cardStarted += 1;
+    if (cardStarted === 1) await cardDeferred.promise;
+  });
+  queue.registerHandler("db", async () => {
+    dbStarted = true;
+    await dbDeferred.promise;
+  });
+
+  queue.enqueue({ taskType: "card" });
+  const blockedCard = queue.enqueue({ taskType: "card" });
+  queue.enqueue({ taskType: "db" });
+
+  await waitFor(() => dbStarted === true);
+  assert.equal(queue.getTask(blockedCard.task.id).status, "waiting_resource");
+  assert.equal(queue.getQueueStats().resources.cardtrader.waitingCount, 1);
+  assert.equal(queue.getQueueStats().resources.database.inUse, 1);
+
+  dbDeferred.resolve();
+  cardDeferred.resolve();
+  await waitFor(() => cardStarted === 2);
 });
 
 test("retry e backoff controllato completano il task al secondo tentativo", async () => {
@@ -704,23 +798,26 @@ test("rifiuta taskType sconosciuti prima di accodare", () => {
 });
 
 test("peso, risorse, concorrenza, timeout e retry arrivano dal registry", () => {
-  const queue = createQueue([
-    taskDefinition({
-      taskType: "catalogued",
-      endpoint: "/catalogued",
-      weight: 2,
-      resources: ["local", "database"],
-      concurrencyGroup: "catalogued-group",
-      timeoutMs: 7_000,
-      maxRetries: 4,
-      retryBackoff: { strategy: "linear", baseDelayMs: 200, maxDelayMs: 1_000 },
-      idempotency: {
-        required: false,
-        strategy: "client-key",
-        keySource: "header:Idempotency-Key",
-      },
-    }),
-  ]);
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "catalogued",
+        endpoint: "/catalogued",
+        weight: 2,
+        resources: ["local", "database"],
+        concurrencyGroup: "catalogued-group",
+        timeoutMs: 7_000,
+        maxRetries: 4,
+        retryBackoff: { strategy: "linear", baseDelayMs: 200, maxDelayMs: 1_000 },
+        idempotency: {
+          required: false,
+          strategy: "client-key",
+          keySource: "header:Idempotency-Key",
+        },
+      }),
+    ],
+    { groupLimits: { "catalogued-group": 1 } },
+  );
   queue.registerHandler("catalogued", async () => ({ ok: true }));
 
   const { task } = queue.enqueue({
@@ -763,6 +860,45 @@ test("il registry ufficiale e valido e i task CardTrader dichiarano le policy ri
     assert.match(definition.concurrencyGroup, /^cardtrader/);
     assert.equal(definition.idempotency.required, true);
   }
+
+  const excelDefinition = definitions.find(
+    (definition) => definition.taskType === "excel.convert-to-pdf",
+  );
+  assert.ok(excelDefinition.resources.includes("libreoffice"));
+  assert.equal(excelDefinition.concurrencyGroup, "excel");
+});
+
+test("validazione registry segnala resources e gruppi sconosciuti", () => {
+  const invalidResourceDefinition = taskDefinition({
+    taskType: "invalid-resource",
+    endpoint: "/invalid-resource",
+    resources: ["unknown-resource"],
+  });
+  const invalidGroupDefinition = taskDefinition({
+    taskType: "invalid-group",
+    endpoint: "/invalid-group",
+    concurrencyGroup: "unknown-group",
+  });
+  const excelWithoutLibreOffice = taskDefinition({
+    taskType: "excel.invalid",
+    endpoint: "/excel-invalid",
+    resources: ["filesystem"],
+    concurrencyGroup: "excel",
+  });
+
+  const errors = validateTaskDefinitions(
+    [invalidResourceDefinition, invalidGroupDefinition, excelWithoutLibreOffice],
+    {
+      knownResources: KNOWN_TASK_RESOURCES,
+      knownConcurrencyGroups: KNOWN_CONCURRENCY_GROUPS,
+    },
+  );
+
+  assert.ok(errors.some((error) => /resource sconosciuta unknown-resource/.test(error)));
+  assert.ok(
+    errors.some((error) => /concurrencyGroup sconosciuto unknown-group/.test(error)),
+  );
+  assert.ok(errors.some((error) => /task Excel senza resource libreoffice/.test(error)));
 });
 
 test("gli endpoint Express che accodano task usano taskType registrati", async () => {

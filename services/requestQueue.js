@@ -3,9 +3,8 @@ const {
   TASK_QUEUE_MAX_PENDING,
   TASK_QUEUE_HISTORY_LIMIT,
   TASK_QUEUE_DEFAULT_TIMEOUT_MS,
-  CARDTRADER_RESOURCE_CONCURRENCY,
-  DATABASE_RESOURCE_CONCURRENCY,
-  LIBREOFFICE_RESOURCE_CONCURRENCY,
+  TASK_RESOURCE_CAPACITIES,
+  TASK_CONCURRENCY_GROUP_CAPACITIES,
 } = require("../config/config");
 const {
   assertValidTaskDefinitions,
@@ -169,6 +168,24 @@ function canTransitionTask(currentStatus, nextStatus) {
   return VALID_TASK_TRANSITIONS[currentStatus]?.has(nextStatus) === true;
 }
 
+function normalizeCapacityConfig(capacities = {}) {
+  const normalized = {};
+
+  for (const [id, value] of Object.entries(capacities)) {
+    const capacity =
+      typeof value === "object" && value !== null ? value.capacity : value;
+    const parsedCapacity = Math.floor(Number(capacity));
+    normalized[id] = {
+      capacity:
+        Number.isFinite(parsedCapacity) && parsedCapacity > 0
+          ? parsedCapacity
+          : 1,
+    };
+  }
+
+  return normalized;
+}
+
 class RequestQueue {
   constructor({
     concurrency = REQUEST_QUEUE_CONCURRENCY,
@@ -184,18 +201,17 @@ class RequestQueue {
     this.historyLimit = Math.max(10, Number(historyLimit) || 10);
     this.defaultTimeoutMs = Math.max(1_000, Number(defaultTimeoutMs) || 1_000);
     this.groupLimits = {
-      "cardtrader-heavy": 1,
-      "cardtrader-maintenance": 1,
-      "excel-conversion": 1,
+      ...Object.fromEntries(
+        Object.entries(TASK_CONCURRENCY_GROUP_CAPACITIES).map(([id, capacity]) => [
+          id,
+          Math.max(1, Number(capacity) || 1),
+        ]),
+      ),
       ...groupLimits,
     };
     this.resourceLimits = {
-      cardtrader: { capacity: CARDTRADER_RESOURCE_CONCURRENCY },
-      database: { capacity: DATABASE_RESOURCE_CONCURRENCY },
-      excel: { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
-      filesystem: { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
-      "cpu-heavy": { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
-      ...resourceLimits,
+      ...normalizeCapacityConfig(TASK_RESOURCE_CAPACITIES),
+      ...normalizeCapacityConfig(resourceLimits),
     };
 
     this.sequence = 0;
@@ -211,11 +227,24 @@ class RequestQueue {
     this.schedulerStarted = false;
     this.schedulerRunning = false;
 
-    assertValidTaskDefinitions(taskDefinitions);
+    assertValidTaskDefinitions(taskDefinitions, {
+      knownResources: new Set(Object.keys(this.resourceLimits)),
+      knownConcurrencyGroups: new Set(Object.keys(this.groupLimits)),
+    });
 
     for (const definition of taskDefinitions) {
       this.taskDefinitions.set(definition.taskType, definition);
     }
+
+    this.recordQueueEvent("resource_capacity_config_loaded", {
+      resources: Object.fromEntries(
+        Object.entries(this.resourceLimits).map(([id, config]) => [
+          id,
+          config.capacity,
+        ]),
+      ),
+      concurrencyGroups: this.groupLimits,
+    });
   }
 
   registerHandler(taskType, handler) {
@@ -268,6 +297,8 @@ class RequestQueue {
       maxPending: this.maxPendingTasks,
       availableSlots,
       isBackpressureActive: pendingCount >= this.maxPendingTasks,
+      resources: this.getResourceSnapshot(),
+      concurrencyGroups: this.getConcurrencyGroupSnapshot(),
       statusCounts,
     };
   }
@@ -619,7 +650,18 @@ class RequestQueue {
   canUseGroup(task) {
     if (!task.concurrencyGroup) return { ok: true };
     const limit = this.groupLimits[task.concurrencyGroup];
-    if (!limit) return { ok: true };
+    if (!limit) {
+      return {
+        ok: false,
+        reason: "unknown_concurrency_group",
+        waitUntil: null,
+        waitingFor: {
+          kind: "concurrency_group",
+          id: task.concurrencyGroup,
+          message: `Gruppo di concorrenza non configurato: ${task.concurrencyGroup}.`,
+        },
+      };
+    }
 
     const currentUsage = this.groupUsage.get(task.concurrencyGroup) ?? 0;
     if (currentUsage >= limit) {
@@ -640,7 +682,20 @@ class RequestQueue {
 
   canUseResources(task, now = Date.now()) {
     for (const resourceId of task.resources) {
-      const config = this.resourceLimits[resourceId] ?? { capacity: 1 };
+      const config = this.resourceLimits[resourceId];
+      if (!config) {
+        return {
+          ok: false,
+          reason: "unknown_resource",
+          waitUntil: null,
+          waitingFor: {
+            kind: "resource",
+            id: resourceId,
+            message: `Risorsa non configurata: ${resourceId}.`,
+          },
+        };
+      }
+
       const resourceTasks = this.resourceUsage.get(resourceId) ?? new Set();
 
       if (resourceTasks.size >= config.capacity) {
@@ -678,9 +733,13 @@ class RequestQueue {
     return { ok: true };
   }
 
-  acquireExecutionSlots(task) {
-    this.activeTaskIds.add(task.id);
+  canAcquireResources(task, now = Date.now()) {
+    const resourceCheck = this.canUseResources(task, now);
+    if (!resourceCheck.ok) return resourceCheck;
+    return this.canUseGroup(task);
+  }
 
+  acquireResources(task) {
     if (task.concurrencyGroup) {
       const currentUsage = this.groupUsage.get(task.concurrencyGroup) ?? 0;
       this.groupUsage.set(task.concurrencyGroup, currentUsage + 1);
@@ -691,18 +750,16 @@ class RequestQueue {
       resourceTasks.add(task.id);
       this.resourceUsage.set(resourceId, resourceTasks);
     }
-  }
 
-  releaseExecutionSlots(task) {
-    this.activeTaskIds.delete(task.id);
-    this.recordQueueEvent("slot_released", {
+    this.recordQueueEvent("resources_acquired", {
       taskId: task.id,
       taskType: task.taskType,
-      runningCount: this.getRunningCount(),
-      concurrencyLimit: this.concurrency,
-      pendingCount: this.getPendingCount(),
+      resources: task.resources,
+      concurrencyGroup: task.concurrencyGroup,
     });
+  }
 
+  releaseResources(task) {
     if (task.concurrencyGroup) {
       const currentUsage = this.groupUsage.get(task.concurrencyGroup) ?? 0;
       if (currentUsage <= 1) {
@@ -720,6 +777,35 @@ class RequestQueue {
         this.resourceUsage.delete(resourceId);
       }
     }
+
+    this.recordQueueEvent("resources_released", {
+      taskId: task.id,
+      taskType: task.taskType,
+      resources: task.resources,
+      concurrencyGroup: task.concurrencyGroup,
+    });
+  }
+
+  acquireExecutionSlots(task) {
+    this.activeTaskIds.add(task.id);
+    this.acquireResources(task);
+  }
+
+  releaseExecutionSlots(task) {
+    this.activeTaskIds.delete(task.id);
+    this.releaseResources(task);
+    this.recordQueueEvent("slot_released", {
+      taskId: task.id,
+      taskType: task.taskType,
+      runningCount: this.getRunningCount(),
+      concurrencyLimit: this.concurrency,
+      pendingCount: this.getPendingCount(),
+    });
+  }
+
+  getBlockingResource(task, now = Date.now()) {
+    const check = this.canAcquireResources(task, now);
+    return check.ok ? null : check.waitingFor;
   }
 
   transitionTask(taskIdOrTask, nextStatus, metadata = {}) {
@@ -857,16 +943,14 @@ class RequestQueue {
     let nextWakeInMs = null;
 
     for (const task of this.getQueuedTasksSorted()) {
-      const groupCheck = this.canUseGroup(task);
-      if (!groupCheck.ok) {
-        this.transitionTask(task, "waiting_resource", {
-          waitingFor: groupCheck.waitingFor,
-        });
-        continue;
-      }
-
-      const resourceCheck = this.canUseResources(task, now);
+      const resourceCheck = this.canAcquireResources(task, now);
       if (!resourceCheck.ok) {
+        this.recordQueueEvent("task_waiting_for_resource", {
+          taskId: task.id,
+          taskType: task.taskType,
+          reason: resourceCheck.reason,
+          waitingFor: resourceCheck.waitingFor,
+        });
         this.transitionTask(
           task,
           resourceCheck.reason === "rate_limit"
@@ -1055,6 +1139,7 @@ class RequestQueue {
       resources[resourceId] = {
         capacity: config.capacity,
         inUse,
+        available: Math.max(0, config.capacity - inUse),
         waitingCount,
       };
 
@@ -1064,6 +1149,29 @@ class RequestQueue {
     }
 
     return resources;
+  }
+
+  getConcurrencyGroupSnapshot() {
+    const concurrencyGroups = {};
+
+    for (const [groupId, capacity] of Object.entries(this.groupLimits)) {
+      const inUse = this.groupUsage.get(groupId) ?? 0;
+      const waitingCount = [...this.tasks.values()].filter(
+        (task) =>
+          task.status === "waiting_resource" &&
+          task.waitingFor?.kind === "concurrency_group" &&
+          task.waitingFor?.id === groupId,
+      ).length;
+
+      concurrencyGroups[groupId] = {
+        capacity,
+        inUse,
+        available: Math.max(0, capacity - inUse),
+        waitingCount,
+      };
+    }
+
+    return concurrencyGroups;
   }
 
   getSnapshot() {
@@ -1106,6 +1214,7 @@ class RequestQueue {
         .slice(0, 20)
         .map((task) => this.toPublicTask(task)),
       resources: this.getResourceSnapshot(),
+      concurrencyGroups: this.getConcurrencyGroupSnapshot(),
       taskDefinitions: listTaskDefinitions().map((definition) => ({
         taskType: definition.taskType,
         weight: definition.weight,

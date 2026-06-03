@@ -28,15 +28,51 @@ module.exports = {
     "TASK_QUEUE_DEFAULT_TIMEOUT_MS",
     15 * 60 * 1000,
   ),
-  CARDTRADER_RESOURCE_CONCURRENCY: numberFromEnv(
+  TASK_RESOURCE_CAPACITIES: {
+    cardtrader: positiveIntegerFromEnv(
+      "TASK_RESOURCE_CARDTRADER_CAPACITY",
+      positiveIntegerFromEnv("CARDTRADER_RESOURCE_CONCURRENCY", 1),
+    ),
+    database: positiveIntegerFromEnv(
+      "TASK_RESOURCE_DATABASE_CAPACITY",
+      positiveIntegerFromEnv("DATABASE_RESOURCE_CONCURRENCY", 2),
+    ),
+    libreoffice: positiveIntegerFromEnv(
+      "TASK_RESOURCE_LIBREOFFICE_CAPACITY",
+      positiveIntegerFromEnv("LIBREOFFICE_RESOURCE_CONCURRENCY", 1),
+    ),
+    filesystem: positiveIntegerFromEnv("TASK_RESOURCE_FILESYSTEM_CAPACITY", 2),
+    "cpu-heavy": positiveIntegerFromEnv("TASK_RESOURCE_CPU_HEAVY_CAPACITY", 1),
+    default: positiveIntegerFromEnv("TASK_RESOURCE_DEFAULT_CAPACITY", 1),
+  },
+  TASK_CONCURRENCY_GROUP_CAPACITIES: {
+    default: positiveIntegerFromEnv(
+      "TASK_CONCURRENCY_GROUP_DEFAULT_CAPACITY",
+      positiveIntegerFromEnv("REQUEST_QUEUE_CONCURRENCY", 2),
+    ),
+    "cardtrader-heavy": positiveIntegerFromEnv(
+      "TASK_CONCURRENCY_GROUP_CARDTRADER_HEAVY_CAPACITY",
+      1,
+    ),
+    "cardtrader-maintenance": positiveIntegerFromEnv(
+      "TASK_CONCURRENCY_GROUP_CARDTRADER_MAINTENANCE_CAPACITY",
+      1,
+    ),
+    excel: positiveIntegerFromEnv("TASK_CONCURRENCY_GROUP_EXCEL_CAPACITY", 1),
+    "cpu-heavy": positiveIntegerFromEnv(
+      "TASK_CONCURRENCY_GROUP_CPU_HEAVY_CAPACITY",
+      1,
+    ),
+  },
+  CARDTRADER_RESOURCE_CONCURRENCY: positiveIntegerFromEnv(
     "CARDTRADER_RESOURCE_CONCURRENCY",
     1,
   ),
-  DATABASE_RESOURCE_CONCURRENCY: numberFromEnv(
+  DATABASE_RESOURCE_CONCURRENCY: positiveIntegerFromEnv(
     "DATABASE_RESOURCE_CONCURRENCY",
     2,
   ),
-  LIBREOFFICE_RESOURCE_CONCURRENCY: numberFromEnv(
+  LIBREOFFICE_RESOURCE_CONCURRENCY: positiveIntegerFromEnv(
     "LIBREOFFICE_RESOURCE_CONCURRENCY",
     1,
   ),
