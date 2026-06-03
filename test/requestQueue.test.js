@@ -77,9 +77,12 @@ function createQueue(taskDefinitions, options = {}) {
 }
 
 function createQueuedTask(queue, input = {}) {
-  queue.registerHandler(input.taskType || "stateful", async () => ({ ok: true }));
+  const taskType = input.taskType || "stateful";
+  if (!queue.taskHandlers.has(taskType)) {
+    queue.registerHandler(taskType, async () => ({ ok: true }));
+  }
   const task = queue.buildTask({
-    taskType: input.taskType || "stateful",
+    taskType,
     requestId: input.requestId || "test-request",
     sourceEndpoint: input.sourceEndpoint || "/stateful",
     payload: input.payload || { secret: "internal" },
@@ -270,6 +273,110 @@ test("rispetta il limite massimo di task concorrenti", async () => {
 
   taskDeferred.resolve();
   await waitFor(() => started === 3);
+});
+
+test("backpressure rifiuta nuovi task senza creare task parziali", () => {
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "limited-queue",
+        endpoint: "/limited-queue",
+      }),
+    ],
+    { autoStart: false, maxPendingTasks: 3 },
+  );
+  queue.registerHandler("limited-queue", async () => ({ ok: true }));
+
+  queue.enqueueTask({ taskType: "limited-queue" });
+  queue.enqueueTask({ taskType: "limited-queue" });
+  queue.enqueueTask({ taskType: "limited-queue" });
+
+  assert.equal(queue.getQueueStats().isBackpressureActive, true);
+  assert.throws(
+    () => queue.enqueueTask({ taskType: "limited-queue" }),
+    (error) => {
+      assert.equal(error.name, "QueueBackpressureError");
+      assert.equal(error.statusCode, 429);
+      assert.equal(error.code, "QUEUE_FULL");
+      assert.equal(error.retryAfterSeconds, 60);
+      return true;
+    },
+  );
+  assert.equal(queue.listTasks({ limit: 10 }).length, 3);
+  assert.equal(queue.sequence, 3);
+});
+
+test("getQueueStats espone running, pending, limiti e slot disponibili", async () => {
+  const runningDeferred = createDeferred();
+  const queue = createQueue(
+    [
+      taskDefinition({ taskType: "running", endpoint: "/running" }),
+      taskDefinition({ taskType: "queued", endpoint: "/queued" }),
+      taskDefinition({ taskType: "waiting", endpoint: "/waiting" }),
+      taskDefinition({ taskType: "limited", endpoint: "/limited" }),
+      taskDefinition({ taskType: "retrying", endpoint: "/retrying", maxRetries: 1 }),
+      taskDefinition({ taskType: "done", endpoint: "/done" }),
+      taskDefinition({ taskType: "failed", endpoint: "/failed" }),
+      taskDefinition({ taskType: "cancelled", endpoint: "/cancelled" }),
+    ],
+    { autoStart: false, concurrency: 2, maxPendingTasks: 5 },
+  );
+  queue.registerHandler("running", async () => {
+    await runningDeferred.promise;
+  });
+
+  const runningTask = createQueuedTask(queue, { taskType: "running" });
+  queue.dispatchNextTask(runningTask);
+
+  createQueuedTask(queue, { taskType: "queued" });
+
+  const waitingTask = createQueuedTask(queue, { taskType: "waiting" });
+  queue.transitionTask(waitingTask.id, "waiting_resource", {
+    waitingFor: { kind: "resource", id: "database", message: "busy" },
+  });
+
+  const rateLimitedTask = createQueuedTask(queue, { taskType: "limited" });
+  queue.transitionTask(rateLimitedTask.id, "rate_limited", {
+    waitingFor: { kind: "rate_limit", id: "cardtrader", message: "limited" },
+    rateLimitInfo: { blocked: true },
+    nextAttemptAt: Date.now() + 60_000,
+  });
+
+  const retryingTask = createQueuedTask(queue, { taskType: "retrying" });
+  queue.transitionTask(retryingTask.id, "running");
+  queue.transitionTask(retryingTask.id, "retrying", {
+    error: new Error("temporary"),
+    nextAttemptAt: Date.now() + 60_000,
+  });
+
+  const doneTask = createQueuedTask(queue, { taskType: "done" });
+  queue.transitionTask(doneTask.id, "running");
+  queue.transitionTask(doneTask.id, "completed", { result: { ok: true } });
+
+  const failedTask = createQueuedTask(queue, { taskType: "failed" });
+  queue.transitionTask(failedTask.id, "running");
+  queue.transitionTask(failedTask.id, "failed", { error: new Error("fail") });
+
+  const cancelledTask = createQueuedTask(queue, { taskType: "cancelled" });
+  queue.transitionTask(cancelledTask.id, "cancelled");
+
+  const stats = queue.getQueueStats();
+  assert.equal(stats.runningCount, 1);
+  assert.equal(stats.pendingCount, 4);
+  assert.equal(stats.queuedCount, 1);
+  assert.equal(stats.waitingResourceCount, 1);
+  assert.equal(stats.rateLimitedCount, 1);
+  assert.equal(stats.retryingCount, 1);
+  assert.equal(stats.completedCount, 1);
+  assert.equal(stats.failedCount, 1);
+  assert.equal(stats.cancelledCount, 1);
+  assert.equal(stats.concurrencyLimit, 2);
+  assert.equal(stats.maxPending, 5);
+  assert.equal(stats.availableSlots, 1);
+  assert.equal(stats.isBackpressureActive, false);
+
+  runningDeferred.resolve();
+  await waitFor(() => queue.getTask(runningTask.id).status === "completed");
 });
 
 test("un task rate-limited su CardTrader non blocca un task non CardTrader", async () => {
@@ -721,6 +828,41 @@ test("API task espone payloadSummary ma non payload interno", async () => {
     ) {
       requestQueueModule.dedupeIndex.delete(task.dedupeKey);
     }
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("API enqueue restituisce 429 quando la coda e piena", async () => {
+  const originalMaxPendingTasks = requestQueueModule.maxPendingTasks;
+  requestQueueModule.maxPendingTasks = 0;
+
+  const app = createApp();
+  const server = await new Promise((resolve) => {
+    const nextServer = app.listen(0, "127.0.0.1", () => resolve(nextServer));
+  });
+
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-cardtrader-token": "test-token",
+      },
+      body: JSON.stringify({
+        taskType: "cardtrader.align-prices",
+        payload: {},
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("Retry-After"), "60");
+    assert.equal(body.ok, false);
+    assert.equal(body.code, "QUEUE_FULL");
+    assert.match(body.error, /coda di elaborazione/i);
+  } finally {
+    requestQueueModule.maxPendingTasks = originalMaxPendingTasks;
     await new Promise((resolve) => server.close(resolve));
   }
 });

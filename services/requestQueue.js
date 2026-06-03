@@ -49,13 +49,25 @@ const VALID_TASK_TRANSITIONS = {
   cancelled: new Set([]),
 };
 
-class QueueCapacityError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "QueueCapacityError";
+class QueueBackpressureError extends Error {
+  constructor({ maxPendingTasks, pendingCount, retryAfterSeconds = 60 } = {}) {
+    super(
+      `Coda piena: ${pendingCount} task pendenti su massimo ${maxPendingTasks}.`,
+    );
+    this.name = "QueueBackpressureError";
+    this.code = "QUEUE_FULL";
     this.statusCode = 429;
+    this.userMessage =
+      "La coda di elaborazione e temporaneamente piena. Riprova tra qualche minuto.";
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.details = {
+      maxPendingTasks,
+      pendingCount,
+    };
   }
 }
+
+const QueueCapacityError = QueueBackpressureError;
 
 class TaskNotFoundError extends Error {
   constructor(taskId) {
@@ -217,6 +229,47 @@ class RequestQueue {
   getPendingCount() {
     return [...this.tasks.values()].filter((task) => PENDING_STATUSES.has(task.status))
       .length;
+  }
+
+  getRunningCount() {
+    return this.activeTaskIds.size;
+  }
+
+  getStatusCounts() {
+    const statusCounts = {};
+    for (const status of TASK_STATUSES) {
+      statusCounts[status] = 0;
+    }
+
+    for (const task of this.tasks.values()) {
+      statusCounts[task.status] = (statusCounts[task.status] ?? 0) + 1;
+    }
+
+    return statusCounts;
+  }
+
+  getQueueStats() {
+    const statusCounts = this.getStatusCounts();
+    const runningCount = this.getRunningCount();
+    const pendingCount = this.getPendingCount();
+    const availableSlots = Math.max(0, this.concurrency - runningCount);
+
+    return {
+      runningCount,
+      pendingCount,
+      queuedCount: statusCounts.queued ?? 0,
+      waitingResourceCount: statusCounts.waiting_resource ?? 0,
+      rateLimitedCount: statusCounts.rate_limited ?? 0,
+      retryingCount: statusCounts.retrying ?? 0,
+      completedCount: statusCounts.completed ?? 0,
+      failedCount: statusCounts.failed ?? 0,
+      cancelledCount: statusCounts.cancelled ?? 0,
+      concurrencyLimit: this.concurrency,
+      maxPending: this.maxPendingTasks,
+      availableSlots,
+      isBackpressureActive: pendingCount >= this.maxPendingTasks,
+      statusCounts,
+    };
   }
 
   getTask(taskId) {
@@ -384,10 +437,16 @@ class RequestQueue {
   }
 
   enqueueTask(taskInput) {
-    if (this.getPendingCount() >= this.maxPendingTasks) {
-      throw new QueueCapacityError(
-        `Coda satura: massimo ${this.maxPendingTasks} task pendenti raggiunto.`,
-      );
+    const queueStats = this.getQueueStats();
+    if (queueStats.isBackpressureActive) {
+      this.recordQueueEvent("backpressure_rejected", {
+        pendingCount: queueStats.pendingCount,
+        maxPending: queueStats.maxPending,
+      });
+      throw new QueueBackpressureError({
+        maxPendingTasks: this.maxPendingTasks,
+        pendingCount: queueStats.pendingCount,
+      });
     }
 
     const task = this.buildTask(taskInput);
@@ -636,6 +695,13 @@ class RequestQueue {
 
   releaseExecutionSlots(task) {
     this.activeTaskIds.delete(task.id);
+    this.recordQueueEvent("slot_released", {
+      taskId: task.id,
+      taskType: task.taskType,
+      runningCount: this.getRunningCount(),
+      concurrencyLimit: this.concurrency,
+      pendingCount: this.getPendingCount(),
+    });
 
     if (task.concurrencyGroup) {
       const currentUsage = this.groupUsage.get(task.concurrencyGroup) ?? 0;
@@ -777,6 +843,16 @@ class RequestQueue {
     console.log(JSON.stringify(logPayload));
   }
 
+  recordQueueEvent(event, details = {}) {
+    console.log(
+      JSON.stringify({
+        scope: "task-queue",
+        event,
+        ...details,
+      }),
+    );
+  }
+
   selectNextExecutableTask(now = Date.now()) {
     let nextWakeInMs = null;
 
@@ -819,6 +895,16 @@ class RequestQueue {
 
   dispatchNextTask(task) {
     if (!task) return null;
+    if (this.getRunningCount() >= this.concurrency) {
+      this.recordQueueEvent("concurrency_limit_reached", {
+        runningCount: this.getRunningCount(),
+        concurrencyLimit: this.concurrency,
+      });
+      throw new TaskConflictError(
+        `Limite globale di concorrenza raggiunto: ${this.concurrency}.`,
+      );
+    }
+
     if (task.status !== "queued") {
       throw new TaskTransitionError(
         `Dispatch consentito solo per task queued. Stato attuale: ${task.status}.`,
@@ -827,6 +913,13 @@ class RequestQueue {
 
     this.acquireExecutionSlots(task);
     this.transitionTask(task, "running");
+    this.recordQueueEvent("task_dispatched", {
+      taskId: task.id,
+      taskType: task.taskType,
+      runningCount: this.getRunningCount(),
+      concurrencyLimit: this.concurrency,
+      pendingCount: this.getPendingCount(),
+    });
     this.executeTask(task);
     return this.toPublicTask(task, { includeEvents: true });
   }
@@ -974,16 +1067,26 @@ class RequestQueue {
   }
 
   getSnapshot() {
-    const statusCounts = {};
-    for (const task of this.tasks.values()) {
-      statusCounts[task.status] = (statusCounts[task.status] ?? 0) + 1;
-    }
+    const queueStats = this.getQueueStats();
+    const statusCounts = queueStats.statusCounts;
 
     return {
       concurrency: this.concurrency,
-      activeCount: this.activeTaskIds.size,
-      pendingCount: this.getPendingCount(),
+      activeCount: queueStats.runningCount,
+      runningCount: queueStats.runningCount,
+      pendingCount: queueStats.pendingCount,
+      queuedCount: queueStats.queuedCount,
+      waitingResourceCount: queueStats.waitingResourceCount,
+      rateLimitedCount: queueStats.rateLimitedCount,
+      retryingCount: queueStats.retryingCount,
+      completedCount: queueStats.completedCount,
+      failedCount: queueStats.failedCount,
+      cancelledCount: queueStats.cancelledCount,
       maxPendingTasks: this.maxPendingTasks,
+      maxPending: queueStats.maxPending,
+      concurrencyLimit: queueStats.concurrencyLimit,
+      availableSlots: queueStats.availableSlots,
+      isBackpressureActive: queueStats.isBackpressureActive,
       historyLimit: this.historyLimit,
       schedulerStarted: this.schedulerStarted,
       schedulerRunning: this.schedulerRunning,
@@ -1047,6 +1150,7 @@ queue.registerHandler("excel.convert-to-pdf", async ({ payload, task, signal }) 
 
 module.exports = queue;
 module.exports.RequestQueue = RequestQueue;
+module.exports.QueueBackpressureError = QueueBackpressureError;
 module.exports.QueueCapacityError = QueueCapacityError;
 module.exports.TaskConflictError = TaskConflictError;
 module.exports.TaskNotFoundError = TaskNotFoundError;

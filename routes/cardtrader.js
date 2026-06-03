@@ -20,6 +20,19 @@ function getIdempotencyKey(req) {
   return String(req.headers["idempotency-key"] || "").trim();
 }
 
+function sendError(res, error, requestId) {
+  if (error.retryAfterSeconds) {
+    res.setHeader("Retry-After", String(error.retryAfterSeconds));
+  }
+
+  return res.status(error.statusCode ?? 500).json({
+    ok: false,
+    code: error.code ?? null,
+    error: error.userMessage ?? error.message,
+    requestId: requestId ?? null,
+  });
+}
+
 router.get("/actions", (req, res) => {
   const actions = listTaskDefinitions()
     .filter((definition) => definition.actionName)
@@ -86,12 +99,7 @@ router.post("/run/:action", (req, res) => {
       },
     });
   } catch (error) {
-    const statusCode = error.statusCode ?? 500;
-    return res.status(statusCode).json({
-      ok: false,
-      error: error.message,
-      requestId: req.requestId ?? null,
-    });
+    return sendError(res, error, req.requestId);
   }
 });
 

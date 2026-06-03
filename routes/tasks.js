@@ -29,6 +29,19 @@ function getIdempotencyKey(req) {
   return String(req.headers["idempotency-key"] || "").trim();
 }
 
+function sendError(res, error, requestId) {
+  if (error.retryAfterSeconds) {
+    res.setHeader("Retry-After", String(error.retryAfterSeconds));
+  }
+
+  return res.status(error.statusCode ?? 500).json({
+    ok: false,
+    code: error.code ?? null,
+    error: error.userMessage ?? error.message,
+    requestId: requestId ?? null,
+  });
+}
+
 router.get("/tasks/definitions", (req, res) => {
   res.status(200).json({
     requestId: req.requestId ?? null,
@@ -87,11 +100,7 @@ router.post("/tasks", (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(error.statusCode ?? 500).json({
-      ok: false,
-      error: error.message,
-      requestId: req.requestId ?? null,
-    });
+    return sendError(res, error, req.requestId);
   }
 });
 
@@ -107,12 +116,15 @@ router.get("/tasks", (req, res) => {
       tasks: requestQueue.listTasks({ statuses, taskType, requestId, limit }),
     });
   } catch (error) {
-    res.status(error.statusCode ?? 500).json({
-      ok: false,
-      error: error.message,
-      requestId: req.requestId ?? null,
-    });
+    sendError(res, error, req.requestId);
   }
+});
+
+router.get("/tasks/queue/status", (req, res) => {
+  res.status(200).json({
+    requestId: req.requestId ?? null,
+    queue: requestQueue.getQueueStats(),
+  });
 });
 
 router.get("/tasks/:taskId", (req, res) => {
@@ -174,11 +186,7 @@ router.post("/tasks/:taskId/cancel", async (req, res) => {
       task,
     });
   } catch (error) {
-    return res.status(error.statusCode ?? 500).json({
-      ok: false,
-      error: error.message,
-      requestId: req.requestId ?? null,
-    });
+    return sendError(res, error, req.requestId);
   }
 });
 
@@ -196,11 +204,7 @@ router.post("/tasks/:taskId/retry", (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(error.statusCode ?? 500).json({
-      ok: false,
-      error: error.message,
-      requestId: req.requestId ?? null,
-    });
+    return sendError(res, error, req.requestId);
   }
 });
 

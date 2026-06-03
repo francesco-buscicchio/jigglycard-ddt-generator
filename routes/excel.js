@@ -22,6 +22,22 @@ function getIdempotencyKey(req) {
   return String(req.headers["idempotency-key"] || "").trim();
 }
 
+function sendError(res, error, requestId) {
+  if (error.retryAfterSeconds) {
+    res.setHeader("Retry-After", String(error.retryAfterSeconds));
+  }
+
+  return res.status(error.statusCode ?? 500).json({
+    ok: false,
+    code: error.code ?? null,
+    error:
+      error.userMessage ??
+      error.message ??
+      "Errore durante la creazione del task Excel -> PDF",
+    requestId,
+  });
+}
+
 router.post("/convert-to-pdf", async (req, res) => {
   const taskType = "excel.convert-to-pdf";
   const definition = getTaskDefinition(taskType);
@@ -113,10 +129,7 @@ router.post("/convert-to-pdf", async (req, res) => {
     });
   } catch (error) {
     await fsPromises.rm(workingDir, { recursive: true, force: true });
-    return res.status(error.statusCode ?? 500).json({
-      error: error.message ?? "Errore durante la creazione del task Excel -> PDF",
-      requestId,
-    });
+    return sendError(res, error, requestId);
   }
 });
 

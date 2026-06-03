@@ -6,12 +6,24 @@ function numberFromEnv(name, fallback) {
   return Number.isFinite(parsedValue) ? parsedValue : fallback;
 }
 
+function positiveIntegerFromEnv(name, fallback) {
+  const parsedValue = numberFromEnv(name, fallback);
+  if (!Number.isFinite(parsedValue) || parsedValue < 1) return fallback;
+  return Math.floor(parsedValue);
+}
+
 module.exports = {
   HOST: process.env.HOST || "0.0.0.0",
   PORT: process.env.PORT || 3010,
-  REQUEST_QUEUE_CONCURRENCY: numberFromEnv("REQUEST_QUEUE_CONCURRENCY", 2),
-  TASK_QUEUE_MAX_PENDING: numberFromEnv("TASK_QUEUE_MAX_PENDING", 100),
-  TASK_QUEUE_HISTORY_LIMIT: numberFromEnv("TASK_QUEUE_HISTORY_LIMIT", 250),
+  REQUEST_QUEUE_CONCURRENCY: positiveIntegerFromEnv(
+    "REQUEST_QUEUE_CONCURRENCY",
+    2,
+  ),
+  TASK_QUEUE_MAX_PENDING: positiveIntegerFromEnv("TASK_QUEUE_MAX_PENDING", 100),
+  TASK_QUEUE_HISTORY_LIMIT: positiveIntegerFromEnv(
+    "TASK_QUEUE_HISTORY_LIMIT",
+    250,
+  ),
   TASK_QUEUE_DEFAULT_TIMEOUT_MS: numberFromEnv(
     "TASK_QUEUE_DEFAULT_TIMEOUT_MS",
     15 * 60 * 1000,
