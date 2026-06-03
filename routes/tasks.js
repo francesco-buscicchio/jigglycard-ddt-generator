@@ -67,7 +67,7 @@ router.post("/tasks", (req, res) => {
   }
 
   try {
-    const { task, deduplicated } = requestQueue.enqueue({
+    const { task, deduplicated } = requestQueue.enqueueTask({
       taskType,
       requestId: req.requestId ?? null,
       sourceEndpoint: req.originalUrl,

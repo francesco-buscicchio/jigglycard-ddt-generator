@@ -89,6 +89,7 @@ function createApp() {
 
 function startServer() {
   const app = createApp();
+  requestQueue.startScheduler();
   const server = app.listen(PORT, HOST, () => {
     const address = server.address();
     const resolvedPort =
@@ -101,6 +102,10 @@ function startServer() {
     for (const url of getServerUrls(HOST, resolvedPort)) {
       console.log(`[SERVER] In ascolto su ${url}`);
     }
+  });
+
+  server.on("close", () => {
+    requestQueue.stopScheduler();
   });
 
   return server;

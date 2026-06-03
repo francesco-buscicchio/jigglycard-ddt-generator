@@ -85,7 +85,7 @@ router.post("/convert-to-pdf", async (req, res) => {
 
     ensureAllowedExcelExtension(originalFilename);
 
-    const { task, deduplicated } = requestQueue.enqueue({
+    const { task, deduplicated } = requestQueue.enqueueTask({
       taskType: definition.taskType,
       requestId,
       sourceEndpoint: req.originalUrl,

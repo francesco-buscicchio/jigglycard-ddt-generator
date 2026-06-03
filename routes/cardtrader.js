@@ -66,7 +66,7 @@ router.post("/run/:action", (req, res) => {
   }
 
   try {
-    const { task, deduplicated } = requestQueue.enqueue({
+    const { task, deduplicated } = requestQueue.enqueueTask({
       taskType: definition.taskType,
       requestId: req.requestId ?? null,
       sourceEndpoint: req.originalUrl,

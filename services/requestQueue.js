@@ -117,13 +117,17 @@ function sanitizeResult(result) {
   return { value: result };
 }
 
+function compareTasksForScheduling(left, right) {
+  if (left.weight !== right.weight) {
+    return left.weight - right.weight;
+  }
+
+  return left.sequence - right.sequence;
+}
+
 function sortTasksForScheduling(tasks = []) {
   return tasks.sort((left, right) => {
-    if (left.weight !== right.weight) {
-      return left.weight - right.weight;
-    }
-
-    return left.sequence - right.sequence;
+    return compareTasksForScheduling(left, right);
   });
 }
 
@@ -192,6 +196,8 @@ class RequestQueue {
     this.groupUsage = new Map();
     this.schedulerTimer = null;
     this.schedulerScheduled = false;
+    this.schedulerStarted = false;
+    this.schedulerRunning = false;
 
     assertValidTaskDefinitions(taskDefinitions);
 
@@ -374,6 +380,10 @@ class RequestQueue {
   }
 
   enqueue(taskInput) {
+    return this.enqueueTask(taskInput);
+  }
+
+  enqueueTask(taskInput) {
     if (this.getPendingCount() >= this.maxPendingTasks) {
       throw new QueueCapacityError(
         `Coda satura: massimo ${this.maxPendingTasks} task pendenti raggiunto.`,
@@ -405,7 +415,7 @@ class RequestQueue {
       taskType: task.taskType,
     });
     this.transitionTask(task.id, "queued");
-    this.schedule();
+    this.scheduleScheduler();
     return {
       task: this.toPublicTask(task, { includeEvents: true }),
       deduplicated: false,
@@ -455,7 +465,7 @@ class RequestQueue {
       );
     }
 
-    return this.enqueue({
+    return this.enqueueTask({
       taskType: task.taskType,
       requestId: task.requestId,
       sourceEndpoint: task.sourceEndpoint,
@@ -467,7 +477,27 @@ class RequestQueue {
     });
   }
 
+  startScheduler() {
+    this.schedulerStarted = true;
+    this.scheduleScheduler();
+  }
+
+  stopScheduler() {
+    this.schedulerStarted = false;
+    this.schedulerScheduled = false;
+    if (this.schedulerTimer) {
+      clearTimeout(this.schedulerTimer);
+      this.schedulerTimer = null;
+    }
+  }
+
   schedule(delayMs = 0) {
+    this.scheduleScheduler(delayMs);
+  }
+
+  scheduleScheduler(delayMs = 0) {
+    if (!this.schedulerStarted) return;
+
     if (delayMs > 0) {
       if (this.schedulerTimer) {
         clearTimeout(this.schedulerTimer);
@@ -475,7 +505,7 @@ class RequestQueue {
 
       this.schedulerTimer = setTimeout(() => {
         this.schedulerTimer = null;
-        this.schedule();
+        this.scheduleScheduler();
       }, delayMs);
       return;
     }
@@ -492,6 +522,39 @@ class RequestQueue {
     return sortTasksForScheduling(
       [...this.tasks.values()].filter((task) => PENDING_STATUSES.has(task.status)),
     );
+  }
+
+  getQueuedTasksSorted() {
+    return sortTasksForScheduling(
+      [...this.tasks.values()].filter((task) => task.status === "queued"),
+    );
+  }
+
+  promoteDueTasks(now = Date.now()) {
+    let nextWakeInMs = null;
+
+    for (const task of this.getPendingTasksSorted()) {
+      if (task.status === "waiting_resource") {
+        this.transitionTask(task, "queued");
+        continue;
+      }
+
+      if (task.status !== "rate_limited" && task.status !== "retrying") {
+        continue;
+      }
+
+      const nextAttemptAt = task.nextAttemptAt ? Date.parse(task.nextAttemptAt) : null;
+      if (nextAttemptAt && nextAttemptAt > now) {
+        const wakeInMs = nextAttemptAt - now;
+        nextWakeInMs =
+          nextWakeInMs === null ? wakeInMs : Math.min(nextWakeInMs, wakeInMs);
+        continue;
+      }
+
+      this.transitionTask(task, "queued");
+    }
+
+    return nextWakeInMs;
   }
 
   canUseGroup(task) {
@@ -714,79 +777,104 @@ class RequestQueue {
     console.log(JSON.stringify(logPayload));
   }
 
+  selectNextExecutableTask(now = Date.now()) {
+    let nextWakeInMs = null;
+
+    for (const task of this.getQueuedTasksSorted()) {
+      const groupCheck = this.canUseGroup(task);
+      if (!groupCheck.ok) {
+        this.transitionTask(task, "waiting_resource", {
+          waitingFor: groupCheck.waitingFor,
+        });
+        continue;
+      }
+
+      const resourceCheck = this.canUseResources(task, now);
+      if (!resourceCheck.ok) {
+        this.transitionTask(
+          task,
+          resourceCheck.reason === "rate_limit"
+            ? "rate_limited"
+            : "waiting_resource",
+          {
+            waitingFor: resourceCheck.waitingFor,
+            nextAttemptAt: resourceCheck.waitUntil,
+            rateLimitInfo: resourceCheck.rateLimitInfo ?? null,
+          },
+        );
+
+        if (resourceCheck.waitUntil) {
+          const wakeInMs = resourceCheck.waitUntil - now;
+          nextWakeInMs =
+            nextWakeInMs === null ? wakeInMs : Math.min(nextWakeInMs, wakeInMs);
+        }
+        continue;
+      }
+
+      return { task, nextWakeInMs };
+    }
+
+    return { task: null, nextWakeInMs };
+  }
+
+  dispatchNextTask(task) {
+    if (!task) return null;
+    if (task.status !== "queued") {
+      throw new TaskTransitionError(
+        `Dispatch consentito solo per task queued. Stato attuale: ${task.status}.`,
+      );
+    }
+
+    this.acquireExecutionSlots(task);
+    this.transitionTask(task, "running");
+    this.executeTask(task);
+    return this.toPublicTask(task, { includeEvents: true });
+  }
+
   runScheduler() {
+    if (!this.schedulerStarted || this.schedulerRunning) return;
+
+    this.schedulerRunning = true;
     let startedAny = false;
     let nextWakeInMs = null;
 
-    while (this.activeTaskIds.size < this.concurrency) {
-      const pendingTasks = this.getPendingTasksSorted();
-      let scheduledTask = null;
-
-      for (const task of pendingTasks) {
+    try {
+      while (this.activeTaskIds.size < this.concurrency) {
         const now = Date.now();
-
-        if (task.nextAttemptAt && Date.parse(task.nextAttemptAt) > now) {
-          const wakeInMs = Date.parse(task.nextAttemptAt) - now;
+        const promotionWakeInMs = this.promoteDueTasks(now);
+        if (promotionWakeInMs !== null) {
           nextWakeInMs =
-            nextWakeInMs === null ? wakeInMs : Math.min(nextWakeInMs, wakeInMs);
-          continue;
+            nextWakeInMs === null
+              ? promotionWakeInMs
+              : Math.min(nextWakeInMs, promotionWakeInMs);
         }
 
-        if (
-          task.status === "waiting_resource" ||
-          task.status === "rate_limited" ||
-          task.status === "retrying"
-        ) {
-          this.transitionTask(task, "queued");
+        const selection = this.selectNextExecutableTask(now);
+        if (selection.nextWakeInMs !== null) {
+          nextWakeInMs =
+            nextWakeInMs === null
+              ? selection.nextWakeInMs
+              : Math.min(nextWakeInMs, selection.nextWakeInMs);
         }
 
-        const groupCheck = this.canUseGroup(task);
-        if (!groupCheck.ok) {
-          this.transitionTask(task, "waiting_resource", {
-            waitingFor: groupCheck.waitingFor,
-          });
-          continue;
-        }
-
-        const resourceCheck = this.canUseResources(task, now);
-        if (!resourceCheck.ok) {
-          this.transitionTask(
-            task,
-            resourceCheck.reason === "rate_limit"
-              ? "rate_limited"
-              : "waiting_resource",
-            {
-              waitingFor: resourceCheck.waitingFor,
-              nextAttemptAt: resourceCheck.waitUntil,
-              rateLimitInfo: resourceCheck.rateLimitInfo ?? null,
-            },
-          );
-
-          if (resourceCheck.waitUntil) {
-            const wakeInMs = resourceCheck.waitUntil - now;
-            nextWakeInMs =
-              nextWakeInMs === null
-                ? wakeInMs
-                : Math.min(nextWakeInMs, wakeInMs);
-          }
-          continue;
-        }
-
-        scheduledTask = task;
-        break;
+        if (!selection.task) break;
+        startedAny = true;
+        this.dispatchNextTask(selection.task);
       }
-
-      if (!scheduledTask) break;
-      startedAny = true;
-      this.startTask(scheduledTask);
+    } finally {
+      this.schedulerRunning = false;
     }
 
     if (!startedAny && nextWakeInMs !== null && nextWakeInMs > 0) {
-      this.schedule(nextWakeInMs);
+      this.scheduleScheduler(nextWakeInMs);
     }
   }
 
-  async startTask(task) {
+  startTask(task) {
+    return this.dispatchNextTask(task);
+  }
+
+  async executeTask(task) {
     const handler = this.taskHandlers.get(task.taskType);
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => {
@@ -797,9 +885,6 @@ class RequestQueue {
       abortController,
       timeoutHandle,
     };
-
-    this.acquireExecutionSlots(task);
-    this.transitionTask(task, "running");
 
     try {
       const result = await handler({
@@ -900,6 +985,8 @@ class RequestQueue {
       pendingCount: this.getPendingCount(),
       maxPendingTasks: this.maxPendingTasks,
       historyLimit: this.historyLimit,
+      schedulerStarted: this.schedulerStarted,
+      schedulerRunning: this.schedulerRunning,
       validStatuses: [...TASK_STATUSES],
       validTransitions: Object.fromEntries(
         Object.entries(VALID_TASK_TRANSITIONS).map(([status, nextStatuses]) => [
@@ -966,4 +1053,5 @@ module.exports.TaskNotFoundError = TaskNotFoundError;
 module.exports.TaskTransitionError = TaskTransitionError;
 module.exports.TASK_STATUSES = TASK_STATUSES;
 module.exports.VALID_TASK_TRANSITIONS = VALID_TASK_TRANSITIONS;
+module.exports.compareTasksForScheduling = compareTasksForScheduling;
 module.exports.UnsupportedTaskTypeError = UnsupportedTaskTypeError;

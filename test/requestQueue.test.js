@@ -56,18 +56,22 @@ function taskDefinition(overrides = {}) {
 }
 
 function createQueue(taskDefinitions, options = {}) {
+  const { autoStart = true, ...queueOptions } = options;
   const resourceLimits = {
     local: { capacity: 100 },
-    ...(options.resourceLimits ?? {}),
+    ...(queueOptions.resourceLimits ?? {}),
   };
   const queue = new RequestQueue({
     concurrency: 1,
     maxPendingTasks: 20,
     historyLimit: 50,
-    ...options,
+    ...queueOptions,
     resourceLimits,
     taskDefinitions,
   });
+  if (autoStart) {
+    queue.startScheduler();
+  }
 
   return queue;
 }
@@ -150,6 +154,85 @@ test("mantiene FIFO a parita di peso", async () => {
 
   await waitFor(() => order.length === 2);
   assert.deepEqual(order, ["a", "b"]);
+});
+
+test("selectNextExecutableTask ordina per peso e poi sequence", () => {
+  const queue = createQueue(
+    [
+      taskDefinition({ taskType: "a", endpoint: "/a", weight: 10 }),
+      taskDefinition({ taskType: "b", endpoint: "/b", weight: 1 }),
+      taskDefinition({ taskType: "c", endpoint: "/c", weight: 1 }),
+    ],
+    { autoStart: false, concurrency: 1 },
+  );
+
+  for (const taskType of ["a", "b", "c"]) {
+    queue.registerHandler(taskType, async () => ({ taskType }));
+    const task = queue.buildTask({ taskType });
+    queue.tasks.set(task.id, task);
+    queue.transitionTask(task.id, "queued");
+  }
+
+  let selected = queue.selectNextExecutableTask().task;
+  assert.equal(selected.taskType, "b");
+  queue.transitionTask(selected.id, "running");
+  queue.transitionTask(selected.id, "completed", { result: { ok: true } });
+
+  selected = queue.selectNextExecutableTask().task;
+  assert.equal(selected.taskType, "c");
+  queue.transitionTask(selected.id, "running");
+  queue.transitionTask(selected.id, "completed", { result: { ok: true } });
+
+  selected = queue.selectNextExecutableTask().task;
+  assert.equal(selected.taskType, "a");
+});
+
+test("selectNextExecutableTask seleziona solo task queued", () => {
+  const queue = createQueue(
+    [
+      taskDefinition({ taskType: "queued", endpoint: "/queued", weight: 10 }),
+      taskDefinition({ taskType: "waiting", endpoint: "/waiting", weight: 1 }),
+      taskDefinition({ taskType: "limited", endpoint: "/limited", weight: 1 }),
+      taskDefinition({ taskType: "retrying", endpoint: "/retrying", weight: 1 }),
+      taskDefinition({ taskType: "done", endpoint: "/done", weight: 1 }),
+      taskDefinition({ taskType: "failed", endpoint: "/failed", weight: 1 }),
+      taskDefinition({ taskType: "cancelled", endpoint: "/cancelled", weight: 1 }),
+    ],
+    { autoStart: false },
+  );
+
+  const queuedTask = createQueuedTask(queue, { taskType: "queued" });
+  const waitingTask = createQueuedTask(queue, { taskType: "waiting" });
+  queue.transitionTask(waitingTask.id, "waiting_resource", {
+    waitingFor: { kind: "resource", id: "database", message: "busy" },
+  });
+
+  const limitedTask = createQueuedTask(queue, { taskType: "limited" });
+  queue.transitionTask(limitedTask.id, "rate_limited", {
+    waitingFor: { kind: "rate_limit", id: "cardtrader", message: "limited" },
+    rateLimitInfo: { blocked: true },
+    nextAttemptAt: Date.now() + 60_000,
+  });
+
+  const retryingTask = createQueuedTask(queue, { taskType: "retrying" });
+  queue.transitionTask(retryingTask.id, "running");
+  queue.transitionTask(retryingTask.id, "retrying", {
+    error: new Error("temporary"),
+    nextAttemptAt: Date.now() + 60_000,
+  });
+
+  const doneTask = createQueuedTask(queue, { taskType: "done" });
+  queue.transitionTask(doneTask.id, "running");
+  queue.transitionTask(doneTask.id, "completed", { result: { ok: true } });
+
+  const failedTask = createQueuedTask(queue, { taskType: "failed" });
+  queue.transitionTask(failedTask.id, "running");
+  queue.transitionTask(failedTask.id, "failed", { error: new Error("fail") });
+
+  const cancelledTask = createQueuedTask(queue, { taskType: "cancelled" });
+  queue.transitionTask(cancelledTask.id, "cancelled");
+
+  assert.equal(queue.selectNextExecutableTask().task.id, queuedTask.id);
 });
 
 test("rispetta il limite massimo di task concorrenti", async () => {
@@ -365,13 +448,16 @@ test("deduplica due enqueue con la stessa idempotency key", async () => {
 });
 
 test("state machine aggiorna timestamp e modello pubblico in modo coerente", () => {
-  const queue = createQueue([
-    taskDefinition({
-      taskType: "stateful",
-      endpoint: "/stateful",
-      maxRetries: 1,
-    }),
-  ]);
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "stateful",
+        endpoint: "/stateful",
+        maxRetries: 1,
+      }),
+    ],
+    { autoStart: false },
+  );
   const task = createQueuedTask(queue);
 
   let publicTask = queue.getTask(task.id);
@@ -397,13 +483,16 @@ test("state machine aggiorna timestamp e modello pubblico in modo coerente", () 
 });
 
 test("state machine gestisce failed, retrying, waiting_resource, rate_limited e cancelled", () => {
-  const queue = createQueue([
-    taskDefinition({
-      taskType: "stateful",
-      endpoint: "/stateful",
-      maxRetries: 2,
-    }),
-  ]);
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "stateful",
+        endpoint: "/stateful",
+        maxRetries: 2,
+      }),
+    ],
+    { autoStart: false },
+  );
 
   const failedTask = createQueuedTask(queue);
   queue.transitionTask(failedTask.id, "running");
@@ -470,12 +559,15 @@ test("state machine gestisce failed, retrying, waiting_resource, rate_limited e 
 });
 
 test("state machine rifiuta status e transizioni non validi", () => {
-  const queue = createQueue([
-    taskDefinition({
-      taskType: "stateful",
-      endpoint: "/stateful",
-    }),
-  ]);
+  const queue = createQueue(
+    [
+      taskDefinition({
+        taskType: "stateful",
+        endpoint: "/stateful",
+      }),
+    ],
+    { autoStart: false },
+  );
   const task = createQueuedTask(queue);
 
   assert.throws(
