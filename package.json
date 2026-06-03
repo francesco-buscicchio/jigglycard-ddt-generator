@@ -4,7 +4,9 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "node --test",
+    "test": "npm run docs:check && node --test",
+    "docs:generate": "node scripts/generateEndpointWeightsDoc.js",
+    "docs:check": "node scripts/generateEndpointWeightsDoc.js --check",
     "inventory:excel": "node utils/generateInventoryWorkbook.js",
     "stats": "node utils/stats.js"
   },

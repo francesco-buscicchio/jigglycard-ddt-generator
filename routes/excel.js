@@ -4,6 +4,7 @@ const fsPromises = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const requestQueue = require("../services/requestQueue");
+const { getTaskDefinition } = require("../config/taskDefinitions");
 const {
   ALLOWED_EXTENSIONS,
   ensureAllowedExcelExtension,
@@ -22,9 +23,19 @@ function getIdempotencyKey(req) {
 }
 
 router.post("/convert-to-pdf", async (req, res) => {
+  const taskType = "excel.convert-to-pdf";
+  const definition = getTaskDefinition(taskType);
   const requestId = req.requestId ?? "n/a";
   const sofficeBinaryPath =
     req.requestContext?.requestEnv?.sofficeBinaryPath ?? "";
+
+  if (!definition) {
+    return res.status(500).json({
+      error: `Definizione task mancante nel registry: ${taskType}`,
+      requestId,
+    });
+  }
+
   const workingDir = await fsPromises.mkdtemp(
     path.join(os.tmpdir(), "excel-to-pdf-"),
   );
@@ -75,7 +86,7 @@ router.post("/convert-to-pdf", async (req, res) => {
     ensureAllowedExcelExtension(originalFilename);
 
     const { task, deduplicated } = requestQueue.enqueue({
-      taskType: "excel.convert-to-pdf",
+      taskType: definition.taskType,
       requestId,
       sourceEndpoint: req.originalUrl,
       requestEnv: req.requestContext?.requestEnv ?? {},

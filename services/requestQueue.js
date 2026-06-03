@@ -8,7 +8,7 @@ const {
   LIBREOFFICE_RESOURCE_CONCURRENCY,
 } = require("../config/config");
 const {
-  getTaskDefinition,
+  assertValidTaskDefinitions,
   listTaskDefinitions,
 } = require("../config/taskDefinitions");
 const { isAbortError, createAbortError } = require("../utils/abort");
@@ -51,6 +51,14 @@ class TaskConflictError extends Error {
   }
 }
 
+class UnsupportedTaskTypeError extends Error {
+  constructor(taskType) {
+    super(`Task type non supportato: ${taskType}`);
+    this.name = "UnsupportedTaskTypeError";
+    this.statusCode = 400;
+  }
+}
+
 function toIso(value) {
   return value ? new Date(value).toISOString() : null;
 }
@@ -85,6 +93,20 @@ function sortTasksForScheduling(tasks = []) {
   });
 }
 
+function getRetryDelayMs(task) {
+  const retryBackoff = task.retryBackoff ?? {};
+  if (retryBackoff.strategy === "none") return 0;
+
+  const baseDelayMs = Math.max(0, Number(retryBackoff.baseDelayMs) || 1_000);
+  const maxDelayMs = Math.max(baseDelayMs, Number(retryBackoff.maxDelayMs) || 30_000);
+
+  if (retryBackoff.strategy === "linear") {
+    return Math.min(maxDelayMs, baseDelayMs * (task.retryCount + 1));
+  }
+
+  return Math.min(maxDelayMs, baseDelayMs * 2 ** task.retryCount);
+}
+
 class RequestQueue {
   constructor({
     concurrency = REQUEST_QUEUE_CONCURRENCY,
@@ -108,7 +130,9 @@ class RequestQueue {
     this.resourceLimits = {
       cardtrader: { capacity: CARDTRADER_RESOURCE_CONCURRENCY },
       database: { capacity: DATABASE_RESOURCE_CONCURRENCY },
-      libreoffice: { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
+      excel: { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
+      filesystem: { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
+      "cpu-heavy": { capacity: LIBREOFFICE_RESOURCE_CONCURRENCY },
       ...resourceLimits,
     };
 
@@ -122,6 +146,8 @@ class RequestQueue {
     this.groupUsage = new Map();
     this.schedulerTimer = null;
     this.schedulerScheduled = false;
+
+    assertValidTaskDefinitions(taskDefinitions);
 
     for (const definition of taskDefinitions) {
       this.taskDefinitions.set(definition.taskType, definition);
@@ -185,10 +211,13 @@ class RequestQueue {
       timeoutMs: task.timeoutMs,
       retryCount: task.retryCount,
       maxRetries: task.maxRetries,
+      idempotency: task.idempotency,
       queuePosition: queuePosition >= 0 ? queuePosition + 1 : null,
       payloadSummary: task.payloadSummary,
       resources: task.resources,
       concurrencyGroup: task.concurrencyGroup,
+      rateLimitGroup: task.rateLimitGroup,
+      retryBackoff: task.retryBackoff,
       waitingFor: task.waitingFor,
       nextAttemptAt: task.nextAttemptAt,
       rateLimitInfo: task.rateLimitInfo,
@@ -216,7 +245,11 @@ class RequestQueue {
   }) {
     const definition = this.getTaskDefinition(taskType);
     if (!definition) {
-      throw new Error(`Task type non supportato: ${taskType}`);
+      throw new UnsupportedTaskTypeError(taskType);
+    }
+
+    if (definition.enabled === false) {
+      throw new TaskConflictError(`Task type disabilitato: ${taskType}`);
     }
 
     if (!this.taskHandlers.has(taskType)) {
@@ -230,6 +263,12 @@ class RequestQueue {
       definition.buildDedupeKey?.({ payload, requestEnv, taskType }) ||
       "";
 
+    if (definition.idempotency?.required && !dedupeKey) {
+      throw new TaskConflictError(
+        `Idempotenza obbligatoria non soddisfatta per task type: ${taskType}`,
+      );
+    }
+
     return {
       id: taskId,
       sequence,
@@ -239,12 +278,12 @@ class RequestQueue {
       description: definition.description,
       sourceEndpoint: sourceEndpoint || definition.endpoint,
       requestId: requestId ?? null,
-      weight: Number(definition.weight) || 100,
+      weight: Number(definition.weight),
       status: "pending",
-      timeoutMs:
-        Math.max(1_000, Number(definition.timeoutMs) || this.defaultTimeoutMs),
+      timeoutMs: Math.max(1_000, Number(definition.timeoutMs)),
       retryCount: 0,
-      maxRetries: Math.max(0, Number(definition.maxRetries) || 0),
+      maxRetries: Math.max(0, Number(definition.maxRetries)),
+      idempotency: { ...definition.idempotency },
       allowManualRetry: definition.allowManualRetry === true,
       createdAt: toIso(Date.now()),
       startedAt: null,
@@ -261,6 +300,8 @@ class RequestQueue {
         ? definition.resources.slice()
         : [],
       concurrencyGroup: definition.concurrencyGroup ?? null,
+      rateLimitGroup: definition.rateLimitGroup ?? null,
+      retryBackoff: definition.retryBackoff ?? { strategy: "exponential" },
       payloadSummary:
         payloadSummary ??
         definition.buildPayloadSummary?.(payload, requestEnv) ??
@@ -644,7 +685,7 @@ class RequestQueue {
     } catch (error) {
       const retryable = task.retryCount < task.maxRetries && !isAbortError(error);
       if (retryable) {
-        const nextRetryAt = Date.now() + Math.min(30_000, 1_000 * 2 ** task.retryCount);
+        const nextRetryAt = Date.now() + getRetryDelayMs(task);
         task.retryCount += 1;
         task.error = serializeError(error);
         this.releaseExecutionSlots(task);
@@ -790,3 +831,4 @@ module.exports.RequestQueue = RequestQueue;
 module.exports.QueueCapacityError = QueueCapacityError;
 module.exports.TaskConflictError = TaskConflictError;
 module.exports.TaskNotFoundError = TaskNotFoundError;
+module.exports.UnsupportedTaskTypeError = UnsupportedTaskTypeError;

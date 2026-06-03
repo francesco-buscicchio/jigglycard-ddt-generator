@@ -5,6 +5,13 @@ const path = require("path");
 const {
   RequestQueue,
 } = require("../services/requestQueue");
+const {
+  listTaskDefinitions,
+  validateTaskDefinitions,
+} = require("../config/taskDefinitions");
+const {
+  generateEndpointWeightsDoc,
+} = require("../scripts/generateEndpointWeightsDoc");
 const cardTraderRateLimiter = require("../services/cardTraderRateLimiter");
 
 function createDeferred() {
@@ -28,13 +35,36 @@ async function waitFor(predicate, { timeoutMs = 2_000, intervalMs = 10 } = {}) {
   throw new Error("Timeout in attesa della condizione di test.");
 }
 
+function taskDefinition(overrides = {}) {
+  const taskType = overrides.taskType || "test.task";
+  return {
+    taskType,
+    endpoint: overrides.endpoint || `/${taskType}`,
+    method: "POST",
+    description: overrides.description || `Task ${taskType}`,
+    weight: 5,
+    resources: ["local"],
+    concurrencyGroup: "default",
+    timeoutMs: 2_000,
+    maxRetries: 0,
+    idempotency: { required: false, strategy: "none" },
+    operationalNotes: "Definizione task usata dai test.",
+    ...overrides,
+  };
+}
+
 function createQueue(taskDefinitions, options = {}) {
+  const resourceLimits = {
+    local: { capacity: 100 },
+    ...(options.resourceLimits ?? {}),
+  };
   const queue = new RequestQueue({
     concurrency: 1,
     maxPendingTasks: 20,
     historyLimit: 50,
-    taskDefinitions,
     ...options,
+    resourceLimits,
+    taskDefinitions,
   });
 
   return queue;
@@ -47,24 +77,18 @@ test.beforeEach(() => {
 test("esegue prima il task con peso piu basso", async () => {
   const order = [];
   const queue = createQueue([
-    {
+    taskDefinition({
       taskType: "heavy",
       endpoint: "/heavy",
-      method: "POST",
       description: "Heavy",
       weight: 10,
-      resources: [],
-      timeoutMs: 2_000,
-    },
-    {
+    }),
+    taskDefinition({
       taskType: "urgent",
       endpoint: "/urgent",
-      method: "POST",
       description: "Urgent",
       weight: 1,
-      resources: [],
-      timeoutMs: 2_000,
-    },
+    }),
   ]);
 
   queue.registerHandler("heavy", async () => {
@@ -84,24 +108,18 @@ test("esegue prima il task con peso piu basso", async () => {
 test("mantiene FIFO a parita di peso", async () => {
   const order = [];
   const queue = createQueue([
-    {
+    taskDefinition({
       taskType: "a",
       endpoint: "/a",
-      method: "POST",
       description: "A",
       weight: 5,
-      resources: [],
-      timeoutMs: 2_000,
-    },
-    {
+    }),
+    taskDefinition({
       taskType: "b",
       endpoint: "/b",
-      method: "POST",
       description: "B",
       weight: 5,
-      resources: [],
-      timeoutMs: 2_000,
-    },
+    }),
   ]);
 
   queue.registerHandler("a", async () => {
@@ -125,15 +143,13 @@ test("rispetta il limite massimo di task concorrenti", async () => {
   const taskDeferred = createDeferred();
   const queue = createQueue(
     [
-      {
+      taskDefinition({
         taskType: "work",
         endpoint: "/work",
-        method: "POST",
         description: "Work",
         weight: 5,
-        resources: [],
         timeoutMs: 5_000,
-      },
+      }),
     ],
     { concurrency: 2 },
   );
@@ -166,24 +182,23 @@ test("un task rate-limited su CardTrader non blocca un task non CardTrader", asy
 
   const queue = createQueue(
     [
-      {
+      taskDefinition({
         taskType: "card",
         endpoint: "/card",
-        method: "POST",
         description: "Card",
         weight: 1,
         resources: ["cardtrader"],
+        concurrencyGroup: "cardtrader-test",
+        rateLimitGroup: "cardtrader",
         timeoutMs: 5_000,
-      },
-      {
+      }),
+      taskDefinition({
         taskType: "local",
         endpoint: "/local",
-        method: "POST",
         description: "Local",
         weight: 5,
-        resources: [],
         timeoutMs: 5_000,
-      },
+      }),
     ],
     { concurrency: 2 },
   );
@@ -216,24 +231,23 @@ test("il lock CardTrader lascia partire altri task senza quella risorsa", async 
 
   const queue = createQueue(
     [
-      {
+      taskDefinition({
         taskType: "card",
         endpoint: "/card",
-        method: "POST",
         description: "Card",
         weight: 1,
         resources: ["cardtrader"],
+        concurrencyGroup: "cardtrader-test",
+        rateLimitGroup: "cardtrader",
         timeoutMs: 5_000,
-      },
-      {
+      }),
+      taskDefinition({
         taskType: "local",
         endpoint: "/local",
-        method: "POST",
         description: "Local",
         weight: 2,
-        resources: [],
         timeoutMs: 5_000,
-      },
+      }),
     ],
     { concurrency: 2 },
   );
@@ -270,16 +284,14 @@ test("il lock CardTrader lascia partire altri task senza quella risorsa", async 
 test("retry e backoff controllato completano il task al secondo tentativo", async () => {
   let attempts = 0;
   const queue = createQueue([
-    {
+    taskDefinition({
       taskType: "retryable",
       endpoint: "/retryable",
-      method: "POST",
       description: "Retryable",
       weight: 3,
-      resources: [],
       timeoutMs: 5_000,
       maxRetries: 1,
-    },
+    }),
   ]);
 
   queue.registerHandler("retryable", async () => {
@@ -306,15 +318,13 @@ test("retry e backoff controllato completano il task al secondo tentativo", asyn
 test("deduplica due enqueue con la stessa idempotency key", async () => {
   const deferred = createDeferred();
   const queue = createQueue([
-    {
+    taskDefinition({
       taskType: "dedupe",
       endpoint: "/dedupe",
-      method: "POST",
       description: "Dedupe",
       weight: 1,
-      resources: [],
       timeoutMs: 5_000,
-    },
+    }),
   ]);
 
   queue.registerHandler("dedupe", async () => {
@@ -338,7 +348,103 @@ test("deduplica due enqueue con la stessa idempotency key", async () => {
   await waitFor(() => queue.getTask(first.task.id)?.status === "completed");
 });
 
-test("la documentazione endpoint/pesi esiste e contiene la tabella", async () => {
+test("rifiuta taskType sconosciuti prima di accodare", () => {
+  const queue = createQueue([
+    taskDefinition({
+      taskType: "known",
+      endpoint: "/known",
+    }),
+  ]);
+  queue.registerHandler("known", async () => ({ ok: true }));
+
+  assert.throws(
+    () => queue.enqueue({ taskType: "unknown" }),
+    /Task type non supportato: unknown/,
+  );
+});
+
+test("peso, risorse, concorrenza, timeout e retry arrivano dal registry", () => {
+  const queue = createQueue([
+    taskDefinition({
+      taskType: "catalogued",
+      endpoint: "/catalogued",
+      weight: 2,
+      resources: ["local", "database"],
+      concurrencyGroup: "catalogued-group",
+      timeoutMs: 7_000,
+      maxRetries: 4,
+      retryBackoff: { strategy: "linear", baseDelayMs: 200, maxDelayMs: 1_000 },
+      idempotency: {
+        required: false,
+        strategy: "client-key",
+        keySource: "header:Idempotency-Key",
+      },
+    }),
+  ]);
+  queue.registerHandler("catalogued", async () => ({ ok: true }));
+
+  const { task } = queue.enqueue({
+    taskType: "catalogued",
+    weight: 99,
+    timeoutMs: 1,
+    maxRetries: 99,
+    resources: ["client-controlled"],
+    concurrencyGroup: "client-controlled",
+  });
+
+  assert.equal(task.weight, 2);
+  assert.deepEqual(task.resources, ["local", "database"]);
+  assert.equal(task.concurrencyGroup, "catalogued-group");
+  assert.equal(task.timeoutMs, 7_000);
+  assert.equal(task.maxRetries, 4);
+  assert.deepEqual(task.retryBackoff, {
+    strategy: "linear",
+    baseDelayMs: 200,
+    maxDelayMs: 1_000,
+  });
+  assert.deepEqual(task.idempotency, {
+    required: false,
+    strategy: "client-key",
+    keySource: "header:Idempotency-Key",
+  });
+});
+
+test("il registry ufficiale e valido e i task CardTrader dichiarano le policy richieste", () => {
+  const definitions = listTaskDefinitions();
+  assert.deepEqual(validateTaskDefinitions(definitions), []);
+
+  const cardTraderDefinitions = definitions.filter((definition) =>
+    definition.resources.includes("cardtrader"),
+  );
+
+  assert.ok(cardTraderDefinitions.length > 0);
+  for (const definition of cardTraderDefinitions) {
+    assert.equal(definition.rateLimitGroup, "cardtrader");
+    assert.match(definition.concurrencyGroup, /^cardtrader/);
+    assert.equal(definition.idempotency.required, true);
+  }
+});
+
+test("gli endpoint Express che accodano task usano taskType registrati", async () => {
+  const registryTaskTypes = new Set(
+    listTaskDefinitions().map((definition) => definition.taskType),
+  );
+  const cardTraderRoute = await fs.readFile(
+    path.join(__dirname, "..", "routes", "cardtrader.js"),
+    "utf8",
+  );
+  const excelRoute = await fs.readFile(
+    path.join(__dirname, "..", "routes", "excel.js"),
+    "utf8",
+  );
+
+  assert.match(cardTraderRoute, /getCardTraderTaskDefinition/);
+  assert.match(cardTraderRoute, /taskType: definition\.taskType/);
+  assert.match(excelRoute, /getTaskDefinition\(taskType\)/);
+  assert.ok(registryTaskTypes.has("excel.convert-to-pdf"));
+});
+
+test("la documentazione endpoint/pesi e coerente con il registry", async () => {
   const documentationPath = path.join(
     __dirname,
     "..",
@@ -347,8 +453,8 @@ test("la documentazione endpoint/pesi esiste e contiene la tabella", async () =>
   );
   const fileContent = await fs.readFile(documentationPath, "utf8");
 
-  assert.match(fileContent, /Endpoint Weights And Queue Contracts/);
-  assert.match(fileContent, /\| Endpoint \| Metodo \| Descrizione \| Task type \|/);
-  assert.match(fileContent, /\/api\/cardtrader\/run\/align-prices/);
+  assert.equal(fileContent, generateEndpointWeightsDoc());
+  assert.match(fileContent, /\| Task type \| Endpoint \| Metodo HTTP \|/);
+  assert.match(fileContent, /cardtrader\.align-prices/);
   assert.match(fileContent, /\/api\/tasks\/:taskId\/result/);
 });
