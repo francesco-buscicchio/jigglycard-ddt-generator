@@ -2,9 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs/promises");
 const path = require("path");
+const requestQueueModule = require("../services/requestQueue");
 const {
   RequestQueue,
-} = require("../services/requestQueue");
+} = requestQueueModule;
 const {
   listTaskDefinitions,
   validateTaskDefinitions,
@@ -13,6 +14,7 @@ const {
   generateEndpointWeightsDoc,
 } = require("../scripts/generateEndpointWeightsDoc");
 const cardTraderRateLimiter = require("../services/cardTraderRateLimiter");
+const { createApp } = require("../server");
 
 function createDeferred() {
   let resolve;
@@ -68,6 +70,20 @@ function createQueue(taskDefinitions, options = {}) {
   });
 
   return queue;
+}
+
+function createQueuedTask(queue, input = {}) {
+  queue.registerHandler(input.taskType || "stateful", async () => ({ ok: true }));
+  const task = queue.buildTask({
+    taskType: input.taskType || "stateful",
+    requestId: input.requestId || "test-request",
+    sourceEndpoint: input.sourceEndpoint || "/stateful",
+    payload: input.payload || { secret: "internal" },
+    payloadSummary: input.payloadSummary || { safe: true },
+  });
+  queue.tasks.set(task.id, task);
+  queue.transitionTask(task.id, "queued");
+  return task;
 }
 
 test.beforeEach(() => {
@@ -348,6 +364,131 @@ test("deduplica due enqueue con la stessa idempotency key", async () => {
   await waitFor(() => queue.getTask(first.task.id)?.status === "completed");
 });
 
+test("state machine aggiorna timestamp e modello pubblico in modo coerente", () => {
+  const queue = createQueue([
+    taskDefinition({
+      taskType: "stateful",
+      endpoint: "/stateful",
+      maxRetries: 1,
+    }),
+  ]);
+  const task = createQueuedTask(queue);
+
+  let publicTask = queue.getTask(task.id);
+  assert.equal(publicTask.status, "queued");
+  assert.ok(publicTask.createdAt);
+  assert.ok(publicTask.lastTransitionAt);
+  assert.deepEqual(publicTask.payloadSummary, { safe: true });
+  assert.equal(publicTask._payload, undefined);
+
+  queue.transitionTask(task.id, "running");
+  publicTask = queue.getTask(task.id);
+  assert.equal(publicTask.status, "running");
+  assert.ok(publicTask.startedAt);
+  assert.equal(publicTask.attempts, 1);
+  assert.equal(publicTask.waitingFor, null);
+
+  queue.transitionTask(task.id, "completed", { result: { ok: true } });
+  publicTask = queue.getTask(task.id);
+  assert.equal(publicTask.status, "completed");
+  assert.ok(publicTask.completedAt);
+  assert.deepEqual(publicTask.result, { ok: true });
+  assert.equal(publicTask.error, null);
+});
+
+test("state machine gestisce failed, retrying, waiting_resource, rate_limited e cancelled", () => {
+  const queue = createQueue([
+    taskDefinition({
+      taskType: "stateful",
+      endpoint: "/stateful",
+      maxRetries: 2,
+    }),
+  ]);
+
+  const failedTask = createQueuedTask(queue);
+  queue.transitionTask(failedTask.id, "running");
+  queue.transitionTask(failedTask.id, "failed", {
+    error: Object.assign(new Error("boom"), { code: "TEST" }),
+  });
+  let publicTask = queue.getTask(failedTask.id);
+  assert.equal(publicTask.status, "failed");
+  assert.ok(publicTask.failedAt);
+  assert.deepEqual(publicTask.error, {
+    message: "boom",
+    code: "TEST",
+    retryable: false,
+    details: {
+      name: "Error",
+      statusCode: null,
+    },
+    occurredAt: publicTask.error.occurredAt,
+  });
+  assert.ok(publicTask.error.occurredAt);
+
+  const retryingTask = createQueuedTask(queue);
+  queue.transitionTask(retryingTask.id, "running");
+  queue.transitionTask(retryingTask.id, "retrying", {
+    error: new Error("temporary"),
+    nextAttemptAt: Date.now() + 1_000,
+  });
+  publicTask = queue.getTask(retryingTask.id);
+  assert.equal(publicTask.status, "retrying");
+  assert.equal(publicTask.retryCount, 1);
+  assert.equal(publicTask.error.retryable, true);
+  assert.ok(publicTask.nextAttemptAt);
+
+  const waitingTask = createQueuedTask(queue);
+  queue.transitionTask(waitingTask.id, "waiting_resource", {
+    waitingFor: { kind: "resource", id: "database", message: "busy" },
+  });
+  publicTask = queue.getTask(waitingTask.id);
+  assert.equal(publicTask.status, "waiting_resource");
+  assert.deepEqual(publicTask.waitingFor, {
+    kind: "resource",
+    id: "database",
+    message: "busy",
+  });
+
+  queue.transitionTask(waitingTask.id, "queued");
+  assert.equal(queue.getTask(waitingTask.id).waitingFor, null);
+
+  const rateLimitedTask = createQueuedTask(queue);
+  queue.transitionTask(rateLimitedTask.id, "rate_limited", {
+    waitingFor: { kind: "rate_limit", id: "cardtrader", message: "limited" },
+    rateLimitInfo: { blockedUntil: "soon" },
+    nextAttemptAt: Date.now() + 1_000,
+  });
+  publicTask = queue.getTask(rateLimitedTask.id);
+  assert.equal(publicTask.status, "rate_limited");
+  assert.deepEqual(publicTask.rateLimitInfo, { blockedUntil: "soon" });
+
+  const cancelledTask = createQueuedTask(queue);
+  queue.transitionTask(cancelledTask.id, "cancelled");
+  publicTask = queue.getTask(cancelledTask.id);
+  assert.equal(publicTask.status, "cancelled");
+  assert.ok(publicTask.cancelledAt);
+});
+
+test("state machine rifiuta status e transizioni non validi", () => {
+  const queue = createQueue([
+    taskDefinition({
+      taskType: "stateful",
+      endpoint: "/stateful",
+    }),
+  ]);
+  const task = createQueuedTask(queue);
+
+  assert.throws(
+    () => queue.transitionTask(task.id, "completed"),
+    /Transizione task non consentita: queued -> completed/,
+  );
+
+  assert.throws(
+    () => queue.transitionTask(task.id, "unknown"),
+    /Status task non valido: unknown/,
+  );
+});
+
 test("rifiuta taskType sconosciuti prima di accodare", () => {
   const queue = createQueue([
     taskDefinition({
@@ -442,6 +583,54 @@ test("gli endpoint Express che accodano task usano taskType registrati", async (
   assert.match(cardTraderRoute, /taskType: definition\.taskType/);
   assert.match(excelRoute, /getTaskDefinition\(taskType\)/);
   assert.ok(registryTaskTypes.has("excel.convert-to-pdf"));
+});
+
+test("API task espone payloadSummary ma non payload interno", async () => {
+  const task = requestQueueModule.buildTask({
+    taskType: "excel.convert-to-pdf",
+    requestId: "api-payload-test",
+    sourceEndpoint: "/api/excel/convert-to-pdf",
+    payload: {
+      uploadedFilePath: "/tmp/private/input.xlsx",
+      secretToken: "non-deve-uscire",
+    },
+    payloadSummary: {
+      originalFilename: "input.xlsx",
+      uploadedFilePath: "/tmp/private/input.xlsx",
+    },
+  });
+  requestQueueModule.tasks.set(task.id, task);
+  requestQueueModule.transitionTask(task.id, "queued");
+
+  const app = createApp();
+  const server = await new Promise((resolve) => {
+    const nextServer = app.listen(0, "127.0.0.1", () => resolve(nextServer));
+  });
+
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/${task.id}`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.task.requestId, "api-payload-test");
+    assert.deepEqual(body.task.payloadSummary, {
+      originalFilename: "input.xlsx",
+      uploadedFilePath: "/tmp/private/input.xlsx",
+    });
+    assert.equal(body.task._payload, undefined);
+    assert.equal(body.task.payload, undefined);
+    assert.equal(JSON.stringify(body).includes("non-deve-uscire"), false);
+  } finally {
+    requestQueueModule.tasks.delete(task.id);
+    if (
+      task.dedupeKey &&
+      requestQueueModule.dedupeIndex.get(task.dedupeKey) === task.id
+    ) {
+      requestQueueModule.dedupeIndex.delete(task.dedupeKey);
+    }
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("la documentazione endpoint/pesi e coerente con il registry", async () => {

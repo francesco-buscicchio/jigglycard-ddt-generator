@@ -98,12 +98,21 @@ router.post("/tasks", (req, res) => {
 router.get("/tasks", (req, res) => {
   const statuses = parseStatuses(req.query.status);
   const taskType = req.query.taskType ? String(req.query.taskType) : null;
+  const requestId = req.query.requestId ? String(req.query.requestId) : null;
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
 
-  res.status(200).json({
-    requestId: req.requestId ?? null,
-    tasks: requestQueue.listTasks({ statuses, taskType, limit }),
-  });
+  try {
+    res.status(200).json({
+      requestId: req.requestId ?? null,
+      tasks: requestQueue.listTasks({ statuses, taskType, requestId, limit }),
+    });
+  } catch (error) {
+    res.status(error.statusCode ?? 500).json({
+      ok: false,
+      error: error.message,
+      requestId: req.requestId ?? null,
+    });
+  }
 });
 
 router.get("/tasks/:taskId", (req, res) => {

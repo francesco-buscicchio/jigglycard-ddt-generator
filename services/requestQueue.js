@@ -19,6 +19,17 @@ const { executeExcelConversionTask } = require("./excelConversionService");
 const { updateBooster } = require("../utils/updateBoosterInMongo");
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TASK_STATUSES = new Set([
+  "pending",
+  "queued",
+  "running",
+  "waiting_resource",
+  "rate_limited",
+  "retrying",
+  "completed",
+  "failed",
+  "cancelled",
+]);
 const PENDING_STATUSES = new Set([
   "pending",
   "queued",
@@ -26,6 +37,17 @@ const PENDING_STATUSES = new Set([
   "rate_limited",
   "retrying",
 ]);
+const VALID_TASK_TRANSITIONS = {
+  pending: new Set(["queued", "cancelled"]),
+  queued: new Set(["running", "waiting_resource", "rate_limited", "cancelled"]),
+  waiting_resource: new Set(["queued", "cancelled"]),
+  rate_limited: new Set(["queued", "cancelled"]),
+  retrying: new Set(["queued", "cancelled"]),
+  running: new Set(["completed", "retrying", "failed", "cancelled"]),
+  completed: new Set([]),
+  failed: new Set([]),
+  cancelled: new Set([]),
+};
 
 class QueueCapacityError extends Error {
   constructor(message) {
@@ -51,6 +73,14 @@ class TaskConflictError extends Error {
   }
 }
 
+class TaskTransitionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "TaskTransitionError";
+    this.statusCode = 409;
+  }
+}
+
 class UnsupportedTaskTypeError extends Error {
   constructor(taskType) {
     super(`Task type non supportato: ${taskType}`);
@@ -63,14 +93,18 @@ function toIso(value) {
   return value ? new Date(value).toISOString() : null;
 }
 
-function serializeError(error) {
+function serializeError(error, { retryable = false } = {}) {
   if (!error) return null;
 
   return {
-    name: error.name ?? "Error",
     message: error.message ?? "Errore sconosciuto",
     code: error.code ?? null,
-    statusCode: error.statusCode ?? error.response?.status ?? null,
+    retryable,
+    details: {
+      name: error.name ?? "Error",
+      statusCode: error.statusCode ?? error.response?.status ?? null,
+    },
+    occurredAt: toIso(Date.now()),
   };
 }
 
@@ -105,6 +139,18 @@ function getRetryDelayMs(task) {
   }
 
   return Math.min(maxDelayMs, baseDelayMs * 2 ** task.retryCount);
+}
+
+function assertValidStatus(status) {
+  if (!TASK_STATUSES.has(status)) {
+    throw new TaskTransitionError(`Status task non valido: ${status}`);
+  }
+}
+
+function canTransitionTask(currentStatus, nextStatus) {
+  assertValidStatus(currentStatus);
+  assertValidStatus(nextStatus);
+  return VALID_TASK_TRANSITIONS[currentStatus]?.has(nextStatus) === true;
 }
 
 class RequestQueue {
@@ -173,14 +219,21 @@ class RequestQueue {
     return this.toPublicTask(task, { includeEvents: true });
   }
 
-  listTasks({ statuses = null, taskType = null, limit = 50 } = {}) {
+  listTasks({ statuses = null, taskType = null, requestId = null, limit = 50 } = {}) {
     const statusSet =
       Array.isArray(statuses) && statuses.length > 0 ? new Set(statuses) : null;
+
+    if (statusSet) {
+      for (const status of statusSet) {
+        assertValidStatus(status);
+      }
+    }
 
     return [...this.tasks.values()]
       .filter((task) => {
         if (statusSet && !statusSet.has(task.status)) return false;
         if (taskType && task.taskType !== taskType) return false;
+        if (requestId && task.requestId !== requestId) return false;
         return true;
       })
       .sort((left, right) => right.sequence - left.sequence)
@@ -200,6 +253,7 @@ class RequestQueue {
       description: task.description,
       sourceEndpoint: task.sourceEndpoint,
       requestId: task.requestId,
+      sequenceNumber: task.sequence,
       status: task.status,
       weight: task.weight,
       createdAt: task.createdAt,
@@ -208,7 +262,9 @@ class RequestQueue {
       failedAt: task.failedAt,
       cancelledAt: task.cancelledAt,
       updatedAt: task.updatedAt,
+      lastTransitionAt: task.lastTransitionAt,
       timeoutMs: task.timeoutMs,
+      attempts: task.attempts,
       retryCount: task.retryCount,
       maxRetries: task.maxRetries,
       idempotency: task.idempotency,
@@ -281,6 +337,7 @@ class RequestQueue {
       weight: Number(definition.weight),
       status: "pending",
       timeoutMs: Math.max(1_000, Number(definition.timeoutMs)),
+      attempts: 0,
       retryCount: 0,
       maxRetries: Math.max(0, Number(definition.maxRetries)),
       idempotency: { ...definition.idempotency },
@@ -291,6 +348,7 @@ class RequestQueue {
       failedAt: null,
       cancelledAt: null,
       updatedAt: toIso(Date.now()),
+      lastTransitionAt: toIso(Date.now()),
       nextAttemptAt: null,
       waitingFor: null,
       rateLimitInfo: null,
@@ -346,7 +404,7 @@ class RequestQueue {
       requestId: task.requestId,
       taskType: task.taskType,
     });
-    this.setTaskStatus(task, "queued");
+    this.transitionTask(task.id, "queued");
     this.schedule();
     return {
       task: this.toPublicTask(task, { includeEvents: true }),
@@ -361,7 +419,9 @@ class RequestQueue {
     }
 
     if (TERMINAL_STATUSES.has(task.status)) {
-      return this.toPublicTask(task, { includeEvents: true });
+      throw new TaskTransitionError(
+        `Cancel non consentito per task in stato terminale: ${task.status}.`,
+      );
     }
 
     if (task.status === "running") {
@@ -372,12 +432,8 @@ class RequestQueue {
       return this.toPublicTask(task, { includeEvents: true });
     }
 
-    this.finalizeTask(task, {
-      status: "cancelled",
-      completedAtField: "cancelledAt",
-      error: null,
-      result: null,
-    });
+    this.transitionTask(task.id, "cancelled");
+    this.pruneHistory();
     return this.toPublicTask(task, { includeEvents: true });
   }
 
@@ -537,30 +593,102 @@ class RequestQueue {
     }
   }
 
-  setTaskStatus(task, status, extra = {}) {
-    const nextAttemptAt = extra.nextAttemptAt ? toIso(extra.nextAttemptAt) : null;
-    const waitingFor = extra.waitingFor ?? null;
-    const rateLimitInfo = extra.rateLimitInfo ?? null;
+  transitionTask(taskIdOrTask, nextStatus, metadata = {}) {
+    const task =
+      typeof taskIdOrTask === "string" ? this.tasks.get(taskIdOrTask) : taskIdOrTask;
+    if (!task) {
+      throw new TaskNotFoundError(taskIdOrTask);
+    }
+
+    assertValidStatus(nextStatus);
+
+    const previousStatus = task.status;
+    const nextAttemptAt = metadata.nextAttemptAt
+      ? toIso(metadata.nextAttemptAt)
+      : null;
+    const waitingFor = metadata.waitingFor ?? null;
+    const rateLimitInfo = metadata.rateLimitInfo ?? null;
     const statusUnchanged =
-      task.status === status &&
+      previousStatus === nextStatus &&
       JSON.stringify(task.waitingFor) === JSON.stringify(waitingFor) &&
+      JSON.stringify(task.rateLimitInfo) === JSON.stringify(rateLimitInfo) &&
       task.nextAttemptAt === nextAttemptAt;
 
-    task.status = status;
-    task.updatedAt = toIso(Date.now());
-    task.waitingFor = waitingFor;
-    task.nextAttemptAt = nextAttemptAt;
-    task.rateLimitInfo = rateLimitInfo;
-
     if (statusUnchanged) {
-      return;
+      return task;
+    }
+
+    if (previousStatus === nextStatus) {
+      throw new TaskTransitionError(
+        `Transizione task non valida: ${previousStatus} -> ${nextStatus}.`,
+      );
+    }
+
+    if (!canTransitionTask(previousStatus, nextStatus)) {
+      throw new TaskTransitionError(
+        `Transizione task non consentita: ${previousStatus} -> ${nextStatus}.`,
+      );
+    }
+
+    const now = toIso(Date.now());
+    task.status = nextStatus;
+    task.updatedAt = now;
+    task.lastTransitionAt = now;
+    task.nextAttemptAt = nextAttemptAt;
+
+    if (nextStatus === "running") {
+      task.startedAt = task.startedAt ?? now;
+      task.attempts += 1;
+      task.waitingFor = null;
+      task.rateLimitInfo = null;
+      task.nextAttemptAt = null;
+      task.error = null;
+    } else if (nextStatus === "waiting_resource") {
+      task.waitingFor = waitingFor;
+      task.rateLimitInfo = null;
+    } else if (nextStatus === "rate_limited") {
+      task.waitingFor = waitingFor;
+      task.rateLimitInfo = rateLimitInfo;
+    } else if (nextStatus === "retrying") {
+      task.retryCount += 1;
+      task.waitingFor = null;
+      task.rateLimitInfo = null;
+      task.error = serializeError(metadata.error, { retryable: true });
+    } else if (nextStatus === "completed") {
+      task.completedAt = now;
+      task.waitingFor = null;
+      task.rateLimitInfo = null;
+      task.nextAttemptAt = null;
+      task.error = null;
+      task.result = sanitizeResult(metadata.result);
+    } else if (nextStatus === "failed") {
+      task.failedAt = now;
+      task.waitingFor = null;
+      task.rateLimitInfo = null;
+      task.nextAttemptAt = null;
+      task.error = serializeError(metadata.error, { retryable: false });
+      task.result = null;
+    } else if (nextStatus === "cancelled") {
+      task.cancelledAt = now;
+      task.waitingFor = null;
+      task.rateLimitInfo = null;
+      task.nextAttemptAt = null;
+      task.error = null;
+      task.result = null;
+    } else if (nextStatus === "queued") {
+      task.waitingFor = null;
+      task.rateLimitInfo = null;
+      task.nextAttemptAt = null;
     }
 
     this.recordEvent(task, "status_changed", {
-      status,
+      from: previousStatus,
+      to: nextStatus,
       waitingFor: task.waitingFor,
       nextAttemptAt: task.nextAttemptAt,
     });
+
+    return task;
   }
 
   recordEvent(task, event, details = {}) {
@@ -604,9 +732,17 @@ class RequestQueue {
           continue;
         }
 
+        if (
+          task.status === "waiting_resource" ||
+          task.status === "rate_limited" ||
+          task.status === "retrying"
+        ) {
+          this.transitionTask(task, "queued");
+        }
+
         const groupCheck = this.canUseGroup(task);
         if (!groupCheck.ok) {
-          this.setTaskStatus(task, "waiting_resource", {
+          this.transitionTask(task, "waiting_resource", {
             waitingFor: groupCheck.waitingFor,
           });
           continue;
@@ -614,7 +750,7 @@ class RequestQueue {
 
         const resourceCheck = this.canUseResources(task, now);
         if (!resourceCheck.ok) {
-          this.setTaskStatus(
+          this.transitionTask(
             task,
             resourceCheck.reason === "rate_limit"
               ? "rate_limited"
@@ -663,10 +799,7 @@ class RequestQueue {
     };
 
     this.acquireExecutionSlots(task);
-    if (!task.startedAt) {
-      task.startedAt = toIso(Date.now());
-    }
-    this.setTaskStatus(task, "running");
+    this.transitionTask(task, "running");
 
     try {
       const result = await handler({
@@ -678,20 +811,17 @@ class RequestQueue {
 
       this.finalizeTask(task, {
         status: "completed",
-        completedAtField: "completedAt",
         result: sanitizeResult(result),
-        error: null,
       });
     } catch (error) {
       const retryable = task.retryCount < task.maxRetries && !isAbortError(error);
       if (retryable) {
         const nextRetryAt = Date.now() + getRetryDelayMs(task);
-        task.retryCount += 1;
-        task.error = serializeError(error);
         this.releaseExecutionSlots(task);
         clearTimeout(timeoutHandle);
         task._execution = null;
-        this.setTaskStatus(task, "retrying", {
+        this.transitionTask(task, "retrying", {
+          error,
           nextAttemptAt: nextRetryAt,
         });
         this.schedule(Math.max(250, nextRetryAt - Date.now()));
@@ -701,26 +831,21 @@ class RequestQueue {
       const wasCancelled = isAbortError(error);
       this.finalizeTask(task, {
         status: wasCancelled ? "cancelled" : "failed",
-        completedAtField: wasCancelled ? "cancelledAt" : "failedAt",
-        error: wasCancelled ? null : serializeError(error),
-        result: null,
+        error: wasCancelled ? null : error,
       });
     }
   }
 
   finalizeTask(
     task,
-    { status, completedAtField, result = null, error = null } = {},
+    { status, result = null, error = null } = {},
   ) {
     if (task._execution?.timeoutHandle) {
       clearTimeout(task._execution.timeoutHandle);
     }
     task._execution = null;
     this.releaseExecutionSlots(task);
-    task[completedAtField] = toIso(Date.now());
-    task.result = result;
-    task.error = error;
-    this.setTaskStatus(task, status);
+    this.transitionTask(task, status, { result, error });
     this.pruneHistory();
     this.schedule();
   }
@@ -775,6 +900,13 @@ class RequestQueue {
       pendingCount: this.getPendingCount(),
       maxPendingTasks: this.maxPendingTasks,
       historyLimit: this.historyLimit,
+      validStatuses: [...TASK_STATUSES],
+      validTransitions: Object.fromEntries(
+        Object.entries(VALID_TASK_TRANSITIONS).map(([status, nextStatuses]) => [
+          status,
+          [...nextStatuses],
+        ]),
+      ),
       statusCounts,
       activeTasks: [...this.activeTaskIds]
         .map((taskId) => this.tasks.get(taskId))
@@ -831,4 +963,7 @@ module.exports.RequestQueue = RequestQueue;
 module.exports.QueueCapacityError = QueueCapacityError;
 module.exports.TaskConflictError = TaskConflictError;
 module.exports.TaskNotFoundError = TaskNotFoundError;
+module.exports.TaskTransitionError = TaskTransitionError;
+module.exports.TASK_STATUSES = TASK_STATUSES;
+module.exports.VALID_TASK_TRANSITIONS = VALID_TASK_TRANSITIONS;
 module.exports.UnsupportedTaskTypeError = UnsupportedTaskTypeError;
