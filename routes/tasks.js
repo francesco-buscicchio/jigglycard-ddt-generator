@@ -15,6 +15,9 @@ const REQUEST_ENV_FIELD_TO_HEADER = {
   dbName: "x-db-name",
   sofficeBinaryPath: "x-soffice-binary-path",
   cardTraderApiBaseUrl: "x-cardtrader-api-base-url",
+  shopifyShop: "x-shopify-shop",
+  shopifyAccessToken: "x-shopify-access-token",
+  shopifyApiVersion: "x-shopify-api-version",
 };
 
 function parseStatuses(rawValue) {

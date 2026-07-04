@@ -16,6 +16,7 @@ const alignPriceService = require("./alignPrice");
 const snifferService = require("./snifferService");
 const { executeExcelConversionTask } = require("./excelConversionService");
 const { updateBooster } = require("../utils/updateBoosterInMongo");
+const shopifySyncService = require("./shopifySyncService");
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const TASK_STATUSES = new Set([
@@ -1255,6 +1256,21 @@ queue.registerHandler("cardtrader.update-booster", async ({ requestEnv, signal }
 );
 queue.registerHandler("excel.convert-to-pdf", async ({ payload, task, signal }) =>
   executeExcelConversionTask(payload, { task, signal }),
+);
+queue.registerHandler(
+  "shopify.fetch-products",
+  async ({ payload, requestEnv, signal }) =>
+    shopifySyncService.fetchProductsSnapshot({ payload, requestEnv, signal }),
+);
+queue.registerHandler(
+  "shopify.fetch-inventory",
+  async ({ payload, requestEnv, signal }) =>
+    shopifySyncService.fetchInventorySnapshot({ payload, requestEnv, signal }),
+);
+queue.registerHandler(
+  "shopify.fetch-shop",
+  async ({ payload, requestEnv, signal }) =>
+    shopifySyncService.fetchShopSnapshot({ payload, requestEnv, signal }),
 );
 
 module.exports = queue;

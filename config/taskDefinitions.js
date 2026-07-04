@@ -27,6 +27,7 @@ const KNOWN_TASK_RESOURCES = new Set([
   "libreoffice",
   "filesystem",
   "cpu-heavy",
+  "shopify",
   "default",
 ]);
 const KNOWN_CONCURRENCY_GROUPS = new Set([
@@ -35,6 +36,7 @@ const KNOWN_CONCURRENCY_GROUPS = new Set([
   "cardtrader-maintenance",
   "excel",
   "cpu-heavy",
+  "shopify",
 ]);
 
 class TaskDefinitionValidationError extends Error {
@@ -303,6 +305,119 @@ const TASK_DEFINITIONS = [
       "Salva l'artefatto PDF su disco e lo rende scaricabile via task result.",
     risks: "Può saturare CPU e I/O se eseguito in parallelo senza limiti.",
     buildPayloadSummary: summarizeFilePayload,
+  },
+  {
+    taskType: "shopify.fetch-products",
+    actionName: "shopify-fetch-products",
+    endpoint: "/api/tasks (taskType shopify.fetch-products)",
+    method: "POST",
+    description:
+      "Scarica da Shopify prodotti, collezioni e membership prodotto-collezione e salva uno snapshot a chunk nel database del tenant, poi notifica il CMS via callback.",
+    enabled: true,
+    weight: 6,
+    resources: ["shopify", "database"],
+    concurrencyGroup: "shopify",
+    rateLimitGroup: null,
+    queueName: "default",
+    estimatedDuration: "5-30m",
+    timeoutMs: 45 * 60 * 1000,
+    maxRetries: 1,
+    retryBackoff: { strategy: "exponential", baseDelayMs: 5_000, maxDelayMs: 60_000 },
+    allowApiCreate: true,
+    allowManualRetry: true,
+    idempotency: {
+      required: true,
+      strategy: "dedupe-by-tenant",
+      keySource: "generated:tenant-fingerprint",
+      dedupeWindowMs: null,
+    },
+    requiredPermissions: ["shopify:fetch"],
+    allowedSources: ["api"],
+    requiredRequestEnv: [
+      "effectiveMongoUri",
+      "dbName",
+      "shopifyShop",
+      "shopifyAccessToken",
+    ],
+    operationalNotes:
+      "Solo lettura verso Shopify; scrive snapshot in shopify_sync_snapshots / shopify_sync_snapshot_chunks nel db del tenant. L'applicazione dei dati resta nel CMS (callback).",
+    risks:
+      "Molte chiamate esterne (una paginazione per collezione); rispettare il rate limit Shopify ed evitare esecuzioni duplicate per lo stesso tenant.",
+  },
+  {
+    taskType: "shopify.fetch-inventory",
+    actionName: "shopify-fetch-inventory",
+    endpoint: "/api/tasks (taskType shopify.fetch-inventory)",
+    method: "POST",
+    description:
+      "Scarica da Shopify prodotti (varianti), locations e livelli di inventario e salva uno snapshot a chunk nel database del tenant, poi notifica il CMS via callback.",
+    enabled: true,
+    weight: 5,
+    resources: ["shopify", "database"],
+    concurrencyGroup: "shopify",
+    rateLimitGroup: null,
+    queueName: "default",
+    estimatedDuration: "3-20m",
+    timeoutMs: 30 * 60 * 1000,
+    maxRetries: 1,
+    retryBackoff: { strategy: "exponential", baseDelayMs: 5_000, maxDelayMs: 60_000 },
+    allowApiCreate: true,
+    allowManualRetry: true,
+    idempotency: {
+      required: true,
+      strategy: "dedupe-by-tenant",
+      keySource: "generated:tenant-fingerprint",
+      dedupeWindowMs: null,
+    },
+    requiredPermissions: ["shopify:fetch"],
+    allowedSources: ["api"],
+    requiredRequestEnv: [
+      "effectiveMongoUri",
+      "dbName",
+      "shopifyShop",
+      "shopifyAccessToken",
+    ],
+    operationalNotes:
+      "Solo lettura verso Shopify; una paginazione inventory_levels per location. L'applicazione al ledger inventario resta nel CMS (callback).",
+    risks:
+      "Chiamate esterne proporzionali al numero di location; evitare esecuzioni duplicate per lo stesso tenant.",
+  },
+  {
+    taskType: "shopify.fetch-shop",
+    actionName: "shopify-fetch-shop",
+    endpoint: "/api/tasks (taskType shopify.fetch-shop)",
+    method: "POST",
+    description:
+      "Scarica le proprietà del negozio Shopify (shop.json) e salva uno snapshot nel database del tenant, poi notifica il CMS via callback.",
+    enabled: true,
+    weight: 1,
+    resources: ["shopify", "database"],
+    concurrencyGroup: "shopify",
+    rateLimitGroup: null,
+    queueName: "default",
+    estimatedDuration: "<1m",
+    timeoutMs: 5 * 60 * 1000,
+    maxRetries: 2,
+    retryBackoff: { strategy: "exponential", baseDelayMs: 2_000, maxDelayMs: 30_000 },
+    allowApiCreate: true,
+    allowManualRetry: true,
+    idempotency: {
+      required: true,
+      strategy: "dedupe-by-tenant",
+      keySource: "generated:tenant-fingerprint",
+      dedupeWindowMs: null,
+    },
+    requiredPermissions: ["shopify:fetch"],
+    allowedSources: ["api"],
+    requiredRequestEnv: [
+      "effectiveMongoUri",
+      "dbName",
+      "shopifyShop",
+      "shopifyAccessToken",
+    ],
+    operationalNotes:
+      "Una singola chiamata Shopify; snapshot minimale con le proprietà del negozio.",
+    risks: "Nessun rischio particolare: task breve e di sola lettura.",
   },
 ];
 

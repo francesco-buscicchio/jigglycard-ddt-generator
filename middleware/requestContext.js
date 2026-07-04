@@ -20,6 +20,9 @@ module.exports = function requestContext(req, res, next) {
   const dbName = getHeader(req, "x-db-name") || "CMS";
   const sofficeBinaryPath = getHeader(req, "x-soffice-binary-path");
   const cardTraderApiBaseUrl = getHeader(req, "x-cardtrader-api-base-url");
+  const shopifyShop = getHeader(req, "x-shopify-shop");
+  const shopifyAccessToken = getHeader(req, "x-shopify-access-token");
+  const shopifyApiVersion = getHeader(req, "x-shopify-api-version");
 
   req.requestContext = {
     requestId,
@@ -31,6 +34,9 @@ module.exports = function requestContext(req, res, next) {
       dbName,
       sofficeBinaryPath,
       cardTraderApiBaseUrl,
+      shopifyShop,
+      shopifyAccessToken,
+      shopifyApiVersion,
     },
   };
 

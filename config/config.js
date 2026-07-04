@@ -43,6 +43,7 @@ module.exports = {
     ),
     filesystem: positiveIntegerFromEnv("TASK_RESOURCE_FILESYSTEM_CAPACITY", 2),
     "cpu-heavy": positiveIntegerFromEnv("TASK_RESOURCE_CPU_HEAVY_CAPACITY", 1),
+    shopify: positiveIntegerFromEnv("TASK_RESOURCE_SHOPIFY_CAPACITY", 1),
     default: positiveIntegerFromEnv("TASK_RESOURCE_DEFAULT_CAPACITY", 1),
   },
   TASK_CONCURRENCY_GROUP_CAPACITIES: {
@@ -63,6 +64,7 @@ module.exports = {
       "TASK_CONCURRENCY_GROUP_CPU_HEAVY_CAPACITY",
       1,
     ),
+    shopify: positiveIntegerFromEnv("TASK_CONCURRENCY_GROUP_SHOPIFY_CAPACITY", 1),
   },
   CARDTRADER_RESOURCE_CONCURRENCY: positiveIntegerFromEnv(
     "CARDTRADER_RESOURCE_CONCURRENCY",
