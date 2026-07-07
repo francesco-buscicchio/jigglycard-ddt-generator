@@ -43,6 +43,37 @@ async function cleanupDirectory(directoryPath) {
   await fsPromises.rm(directoryPath, { recursive: true, force: true });
 }
 
+// Retention degli artefatti PDF: elimina da pdf_export i file più vecchi del TTL.
+// Copre i file orfani che pruneHistory non raggiunge (es. dopo un restart).
+async function pruneExpiredArtifacts({ ttlMs, now = Date.now() } = {}) {
+  const maxAgeMs = Math.max(60_000, Number(ttlMs) || 24 * 60 * 60 * 1000);
+  let removedCount = 0;
+
+  let entries;
+  try {
+    entries = await fsPromises.readdir(RESULT_DIRECTORY);
+  } catch (error) {
+    if (error.code === "ENOENT") return { removedCount };
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(RESULT_DIRECTORY, entry);
+    try {
+      const stats = await fsPromises.stat(entryPath);
+      if (!stats.isFile()) continue;
+      if (now - stats.mtimeMs > maxAgeMs) {
+        await fsPromises.rm(entryPath, { force: true });
+        removedCount += 1;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return { removedCount };
+}
+
 async function convertExcelToPdf({
   inputPath,
   outputDir,
@@ -168,8 +199,10 @@ async function executeExcelConversionTask(payload = {}, { task, signal } = {}) {
 
 module.exports = {
   ALLOWED_EXTENSIONS,
+  RESULT_DIRECTORY,
   cleanupDirectory,
   ensureAllowedExcelExtension,
   executeExcelConversionTask,
+  pruneExpiredArtifacts,
   sanitizeFilename,
 };

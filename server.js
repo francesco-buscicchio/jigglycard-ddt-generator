@@ -1,10 +1,19 @@
 const express = require("express");
 const os = require("os");
-const { HOST, PORT } = require("./config/config");
+const {
+  HOST,
+  PORT,
+  TASK_PERSISTENCE_ENABLED,
+  TASK_PERSISTENCE_MONGO_URI,
+  PDF_ARTIFACT_TTL_MS,
+} = require("./config/config");
 const originGate = require("./middleware/originGate");
 const apiAuth = require("./middleware/apiAuth");
 const requestContext = require("./middleware/requestContext");
 const requestQueue = require("./services/requestQueue");
+const { startCmsCronScheduler } = require("./services/cmsCronScheduler");
+const { MongoTaskStore } = require("./services/taskStore");
+const { pruneExpiredArtifacts } = require("./services/excelConversionService");
 const cardtraderRoutes = require("./routes/cardtrader");
 const excelRoutes = require("./routes/excel");
 const taskRoutes = require("./routes/tasks");
@@ -87,9 +96,61 @@ function createApp() {
   return app;
 }
 
+// Persistenza coda (VN-16): collega lo store Mongo e recupera i task dopo un
+// restart. Se lo store non è configurato o non raggiungibile, la coda parte
+// comunque in modalità solo-memoria (degradata ma funzionante).
+async function initQueuePersistence() {
+  if (!TASK_PERSISTENCE_ENABLED || !TASK_PERSISTENCE_MONGO_URI) {
+    console.log(
+      "[SERVER] Persistenza coda disattivata: la coda opera solo in memoria.",
+    );
+    return null;
+  }
+
+  try {
+    const store = await new MongoTaskStore().init();
+    requestQueue.attachStore(store);
+    const { restoredCount, requeuedCount } = await requestQueue.restoreFromStore();
+    console.log(
+      `[SERVER] Persistenza coda attiva | task ripristinati=${restoredCount} | riaccodati=${requeuedCount}`,
+    );
+    return store;
+  } catch (error) {
+    console.error(
+      "[SERVER] Persistenza coda non disponibile, avvio in solo-memoria:",
+      error.message,
+    );
+    return null;
+  }
+}
+
+function startArtifactRetention() {
+  const runSweep = () =>
+    pruneExpiredArtifacts({ ttlMs: PDF_ARTIFACT_TTL_MS })
+      .then(({ removedCount }) => {
+        if (removedCount > 0) {
+          console.log(`[SERVER] Retention PDF: rimossi ${removedCount} artefatti scaduti.`);
+        }
+      })
+      .catch((error) =>
+        console.error("[SERVER] Retention PDF fallita:", error.message),
+      );
+
+  runSweep();
+  const timer = setInterval(runSweep, 60 * 60 * 1000);
+  timer.unref();
+  return timer;
+}
+
 function startServer() {
   const app = createApp();
-  requestQueue.startScheduler();
+  const retentionTimer = startArtifactRetention();
+  const cmsCronJobs = startCmsCronScheduler();
+
+  initQueuePersistence().finally(() => {
+    requestQueue.startScheduler();
+  });
+
   const server = app.listen(PORT, HOST, () => {
     const address = server.address();
     const resolvedPort =
@@ -106,6 +167,8 @@ function startServer() {
 
   server.on("close", () => {
     requestQueue.stopScheduler();
+    clearInterval(retentionTimer);
+    cmsCronJobs.forEach((job) => job.stop());
   });
 
   return server;

@@ -1,3 +1,4 @@
+const fsPromises = require("fs/promises");
 const {
   REQUEST_QUEUE_CONCURRENCY,
   TASK_QUEUE_MAX_PENDING,
@@ -196,6 +197,7 @@ class RequestQueue {
     groupLimits = {},
     resourceLimits = {},
     taskDefinitions = listTaskDefinitions(),
+    store = null,
   } = {}) {
     this.concurrency = Math.max(1, Number(concurrency) || 1);
     this.maxPendingTasks = Math.max(1, Number(maxPendingTasks) || 1);
@@ -223,6 +225,8 @@ class RequestQueue {
     this.activeTaskIds = new Set();
     this.resourceUsage = new Map();
     this.groupUsage = new Map();
+    this.store = store;
+    this.timingStats = new Map();
     this.schedulerTimer = null;
     this.schedulerScheduled = false;
     this.schedulerStarted = false;
@@ -250,6 +254,139 @@ class RequestQueue {
 
   registerHandler(taskType, handler) {
     this.taskHandlers.set(taskType, handler);
+  }
+
+  attachStore(store) {
+    this.store = store;
+  }
+
+  serializeTaskForStore(task) {
+    const { _execution, _payload, _requestEnv, ...persistedFields } = task;
+    return {
+      _id: task.id,
+      ...persistedFields,
+      payload: _payload ?? {},
+      requestEnv: _requestEnv ?? {},
+      events: task.events.slice(-100),
+    };
+  }
+
+  persistTask(task) {
+    if (!this.store) return;
+    this.store.saveTask(this.serializeTaskForStore(task));
+  }
+
+  hydrateTaskFromStore(document) {
+    const { _id, payload, requestEnv, ...taskFields } = document;
+    return {
+      ...taskFields,
+      id: _id,
+      events: Array.isArray(document.events) ? document.events : [],
+      _payload: payload ?? {},
+      _requestEnv: requestEnv ?? {},
+      _execution: null,
+    };
+  }
+
+  // Recovery post-restart (VN-16): ricarica i task dallo store. I task che
+  // risultavano `pending` o `running` al momento del crash tornano `queued`;
+  // gli altri stati non terminali vengono ripresi così com'erano e gestiti
+  // dal normale ciclo dello scheduler (promoteDueTasks).
+  async restoreFromStore() {
+    if (!this.store) return { restoredCount: 0, requeuedCount: 0 };
+
+    const documents = await this.store.loadTasks({
+      historyLimit: this.historyLimit,
+    });
+
+    let requeuedCount = 0;
+    for (const document of documents) {
+      const task = this.hydrateTaskFromStore(document);
+      if (!TASK_STATUSES.has(task.status)) continue;
+
+      const isTerminal = TERMINAL_STATUSES.has(task.status);
+      if (!isTerminal && !this.taskHandlers.has(task.taskType)) {
+        task.status = "failed";
+        task.failedAt = toIso(Date.now());
+        task.error = serializeError(
+          new Error(`Handler non registrato dopo il restart: ${task.taskType}`),
+        );
+      } else if (task.status === "running" || task.status === "pending") {
+        task.status = "queued";
+        task.waitingFor = null;
+        task.rateLimitInfo = null;
+        task.nextAttemptAt = null;
+        requeuedCount += 1;
+      }
+
+      this.tasks.set(task.id, task);
+      this.sequence = Math.max(this.sequence, Number(task.sequence) || 0);
+
+      if (task.dedupeKey && !TERMINAL_STATUSES.has(task.status)) {
+        this.dedupeIndex.set(task.dedupeKey, task.id);
+      }
+
+      if (task.status !== document.status) {
+        this.recordEvent(task, "recovered_after_restart", {
+          previousStatus: document.status,
+        });
+        this.persistTask(task);
+      }
+    }
+
+    this.recordQueueEvent("queue_restored_from_store", {
+      restoredCount: documents.length,
+      requeuedCount,
+      pendingCount: this.getPendingCount(),
+      sequence: this.sequence,
+    });
+    this.scheduleScheduler();
+
+    return { restoredCount: documents.length, requeuedCount };
+  }
+
+  recordTaskTiming(task) {
+    const startedAt = task.startedAt ? Date.parse(task.startedAt) : null;
+    const createdAt = task.createdAt ? Date.parse(task.createdAt) : null;
+    const completedAt = task.completedAt ? Date.parse(task.completedAt) : null;
+    if (!startedAt || !completedAt) return;
+
+    const executionMs = Math.max(0, completedAt - startedAt);
+    const waitMs = createdAt ? Math.max(0, startedAt - createdAt) : 0;
+
+    for (const key of ["_global", task.taskType]) {
+      const stats = this.timingStats.get(key) ?? {
+        completedCount: 0,
+        totalExecutionMs: 0,
+        totalWaitMs: 0,
+      };
+      stats.completedCount += 1;
+      stats.totalExecutionMs += executionMs;
+      stats.totalWaitMs += waitMs;
+      this.timingStats.set(key, stats);
+    }
+  }
+
+  getTimingSnapshot() {
+    const toAverages = (stats) => ({
+      completedCount: stats.completedCount,
+      avgExecutionMs: Math.round(stats.totalExecutionMs / stats.completedCount),
+      avgWaitMs: Math.round(stats.totalWaitMs / stats.completedCount),
+    });
+
+    const byTaskType = {};
+    let global = { completedCount: 0, avgExecutionMs: 0, avgWaitMs: 0 };
+
+    for (const [key, stats] of this.timingStats.entries()) {
+      if (stats.completedCount === 0) continue;
+      if (key === "_global") {
+        global = toAverages(stats);
+      } else {
+        byTaskType[key] = toAverages(stats);
+      }
+    }
+
+    return { global, byTaskType };
   }
 
   getTaskDefinition(taskType) {
@@ -300,6 +437,7 @@ class RequestQueue {
       isBackpressureActive: pendingCount >= this.maxPendingTasks,
       resources: this.getResourceSnapshot(),
       concurrencyGroups: this.getConcurrencyGroupSnapshot(),
+      timings: this.getTimingSnapshot(),
       statusCounts,
     };
   }
@@ -489,6 +627,7 @@ class RequestQueue {
         this.recordEvent(existingTask, "deduplicated", {
           dedupedByRequestId: task.requestId,
         });
+        this.persistTask(existingTask);
         return {
           task: this.toPublicTask(existingTask, { includeEvents: true }),
           deduplicated: true,
@@ -897,12 +1036,17 @@ class RequestQueue {
       task.nextAttemptAt = null;
     }
 
+    if (nextStatus === "completed") {
+      this.recordTaskTiming(task);
+    }
+
     this.recordEvent(task, "status_changed", {
       from: previousStatus,
       to: nextStatus,
       waitingFor: task.waitingFor,
       nextAttemptAt: task.nextAttemptAt,
     });
+    this.persistTask(task);
 
     return task;
   }
@@ -1123,7 +1267,23 @@ class RequestQueue {
       if (task.dedupeKey && this.dedupeIndex.get(task.dedupeKey) === task.id) {
         this.dedupeIndex.delete(task.dedupeKey);
       }
+      this.deleteTaskArtifact(task);
+      if (this.store) {
+        this.store.deleteTask(task.id);
+      }
     }
+  }
+
+  deleteTaskArtifact(task) {
+    const artifactPath = task.result?.artifactPath;
+    if (!artifactPath) return;
+
+    fsPromises.rm(artifactPath, { force: true }).catch((error) => {
+      this.recordQueueEvent("artifact_delete_failed", {
+        taskId: task.id,
+        error: error.message,
+      });
+    });
   }
 
   getResourceSnapshot() {
@@ -1228,6 +1388,23 @@ class RequestQueue {
 
 const queue = new RequestQueue();
 
+queue.registerHandler("system.echo", async ({ payload, signal }) => {
+  const delayMs = Math.min(30_000, Math.max(0, Number(payload?.delayMs) || 0));
+  if (delayMs > 0) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, delayMs);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? createAbortError("Task annullato."));
+        },
+        { once: true },
+      );
+    });
+  }
+  return { echo: payload ?? {} };
+});
 queue.registerHandler("cardtrader.align-prices", async ({ requestEnv, signal }) =>
   alignPriceService.alignPrices({ ...requestEnv, signal }),
 );

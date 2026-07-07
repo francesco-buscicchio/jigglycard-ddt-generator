@@ -69,6 +69,40 @@ function summarizeFilePayload(payload = {}) {
 
 const TASK_DEFINITIONS = [
   {
+    taskType: "system.echo",
+    endpoint: "/api/tasks (taskType system.echo)",
+    method: "POST",
+    description:
+      "Restituisce il payload ricevuto dopo un ritardo opzionale (delayMs, max 30s). Smoke-test end-to-end della coda.",
+    enabled: true,
+    weight: 1,
+    resources: ["default"],
+    concurrencyGroup: "default",
+    rateLimitGroup: null,
+    queueName: "default",
+    estimatedDuration: "<1m",
+    timeoutMs: 60 * 1000,
+    maxRetries: 0,
+    retryBackoff: { strategy: "none" },
+    allowApiCreate: true,
+    allowManualRetry: true,
+    idempotency: {
+      required: false,
+      strategy: "client-key",
+      keySource: "header:Idempotency-Key",
+      dedupeWindowMs: null,
+    },
+    requiredPermissions: [],
+    allowedSources: ["api"],
+    requiredRequestEnv: [],
+    operationalNotes:
+      "Nessun effetto esterno: utile per verificare submit async, polling, cancel e retry.",
+    risks: "Nessuno: task inerte di diagnostica.",
+    buildPayloadSummary: (payload = {}) => ({
+      delayMs: payload.delayMs ?? 0,
+    }),
+  },
+  {
     taskType: "cardtrader.align-prices",
     actionName: "align-prices",
     endpoint: "/api/cardtrader/run/align-prices",

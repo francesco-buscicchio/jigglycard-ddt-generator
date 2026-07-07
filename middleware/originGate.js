@@ -3,12 +3,17 @@ const ALLOWED_HEADERS = [
   "Content-Type",
   "Authorization",
   "X-Requested-With",
+  "Idempotency-Key",
+  "x-api-key",
   "x-cardtrader-token",
   "x-mongodb-uri",
   "x-mongo-uri",
   "x-db-name",
   "x-soffice-binary-path",
   "x-cardtrader-api-base-url",
+  "x-shopify-shop",
+  "x-shopify-access-token",
+  "x-shopify-api-version",
 ];
 const ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 

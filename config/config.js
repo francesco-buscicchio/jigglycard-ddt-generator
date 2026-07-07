@@ -28,6 +28,17 @@ module.exports = {
     "TASK_QUEUE_DEFAULT_TIMEOUT_MS",
     15 * 60 * 1000,
   ),
+  TASK_PERSISTENCE_ENABLED: process.env.TASK_PERSISTENCE_ENABLED !== "false",
+  TASK_PERSISTENCE_MONGO_URI:
+    process.env.TASK_PERSISTENCE_MONGO_URI ||
+    process.env.MONGODB_URI ||
+    process.env.MONGO_URI ||
+    "",
+  TASK_PERSISTENCE_DB_NAME:
+    process.env.TASK_PERSISTENCE_DB_NAME || process.env.DB_NAME || "CMS",
+  TASK_PERSISTENCE_COLLECTION:
+    process.env.TASK_PERSISTENCE_COLLECTION || "queue_tasks",
+  PDF_ARTIFACT_TTL_MS: numberFromEnv("PDF_ARTIFACT_TTL_MS", 24 * 60 * 60 * 1000),
   TASK_RESOURCE_CAPACITIES: {
     cardtrader: positiveIntegerFromEnv(
       "TASK_RESOURCE_CARDTRADER_CAPACITY",
@@ -105,6 +116,17 @@ module.exports = {
     0,
   ),
   CARDTRADER_TOKEN: process.env.CARDTRADER_TOKEN,
+
+  // Scheduler cron verso il CMS: chiama gli endpoint /api/cron/* del gestionale
+  // (solleciti pagamento + valutazione notifiche) a intervalli regolari.
+  // Disattivo se CMS_URL o CMS_CRON_SECRET non sono impostati.
+  CMS_URL: String(process.env.CMS_URL || "").trim().replace(/\/+$/, ""),
+  CMS_CRON_SECRET: String(process.env.CMS_CRON_SECRET || "").trim(),
+  CMS_CRON_TIMEZONE: process.env.CMS_CRON_TIMEZONE || "Europe/Rome",
+  CMS_CRON_NOTIFICATIONS: process.env.CMS_CRON_NOTIFICATIONS || "*/15 * * * *",
+  CMS_CRON_REMINDERS: process.env.CMS_CRON_REMINDERS || "0 7 * * *",
+  CMS_CRON_TIMEOUT_MS: numberFromEnv("CMS_CRON_TIMEOUT_MS", 15 * 60 * 1000),
+
   PROCESSED_ORDERS_FILE: "processed_orders.txt",
   DDT_NUMBER_FILE: "ddt_number.txt",
   TEMPLATE_FILE: "./template.xlsx",
