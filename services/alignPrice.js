@@ -20,6 +20,29 @@ const CONDITION_ORDER = [
   "played",
   "poor",
 ];
+// Percentuali applicate al primo (piu' economico) concorrente delle condizioni
+// migliori; al risultato si aggiunge sempre il candidato "primo della stessa
+// condizione - 1 centesimo" e si sceglie il minore.
+// slightly played = Excellent, moderately played = Good.
+const CONDITION_PERCENT_RULES = {
+  "slightly played": { "near mint": 0.8 },
+  "moderately played": { "near mint": 0.6, "slightly played": 0.8 },
+  played: {
+    "near mint": 0.2,
+    "slightly played": 0.4,
+    "moderately played": 0.6,
+  },
+  poor: {
+    "near mint": 0.1,
+    "slightly played": 0.3,
+    "moderately played": 0.5,
+    played: 0.9,
+  },
+};
+// Sopra questa soglia il nuovo prezzo non puo' superare il prezzo attuale
+// aumentato del 1000% (cioe' 11 volte il prezzo attuale).
+const PRICE_INCREASE_CAP_THRESHOLD_CENTS = 10000;
+const MAX_PRICE_INCREASE_FACTOR = 11;
 const GAME_CONFIGS = {
   pokemon: {
     slug: "pokemon",
@@ -528,17 +551,63 @@ async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
 
       if (competitors.length === 0) return;
 
-      const bestCompetitor = competitors[0];
+      const itemCondition = getCondition(item?.properties_hash?.condition);
+      // Listings ordinati per prezzo crescente: il primo di ogni condizione
+      // e' il piu' economico.
+      const cheapestByCondition = new Map();
+      for (const listing of competitors) {
+        const condition = getCondition(listing?.properties_hash?.condition);
+        if (!cheapestByCondition.has(condition)) {
+          cheapestByCondition.set(condition, listing);
+        }
+      }
+
+      const candidates = [];
+      const percentRules = CONDITION_PERCENT_RULES[itemCondition] ?? {};
+      for (const [condition, factor] of Object.entries(percentRules)) {
+        const listing = cheapestByCondition.get(condition);
+        const listingNetCents = listing
+          ? netPriceCents(listing.price_cents)
+          : null;
+        if (typeof listingNetCents === "number") {
+          candidates.push({
+            listing,
+            cents: Math.round(listingNetCents * factor),
+          });
+        }
+      }
+      const sameConditionListing = cheapestByCondition.get(itemCondition);
+      const sameConditionNetCents = sameConditionListing
+        ? netPriceCents(sameConditionListing.price_cents)
+        : null;
+      if (typeof sameConditionNetCents === "number") {
+        candidates.push({
+          listing: sameConditionListing,
+          cents: sameConditionNetCents - 1,
+        });
+      }
+
+      if (candidates.length === 0) return;
+
+      const bestCandidate = candidates.reduce((best, candidate) =>
+        candidate.cents < best.cents ? candidate : best,
+      );
+      const bestCompetitor = bestCandidate.listing;
       const competitorNetCents = netPriceCents(bestCompetitor.price_cents);
-      const targetNetCentsRaw =
-        typeof competitorNetCents === "number"
-          ? Math.max(2, competitorNetCents - 1)
-          : null;
+      const targetNetCentsRaw = Math.max(2, bestCandidate.cents);
       const minPriceCents = gameConfig.minAllowedPriceCents(item);
-      const targetNetCents =
-        typeof targetNetCentsRaw === "number"
-          ? Math.max(targetNetCentsRaw, minPriceCents)
-          : null;
+      let targetNetCents = Math.max(targetNetCentsRaw, minPriceCents);
+
+      if (
+        Number.isFinite(myPriceCents) &&
+        myPriceCents > 0 &&
+        targetNetCents > PRICE_INCREASE_CAP_THRESHOLD_CENTS
+      ) {
+        const maxAllowedCents = myPriceCents * MAX_PRICE_INCREASE_FACTOR;
+        if (targetNetCents > maxAllowedCents) {
+          targetNetCents = maxAllowedCents;
+        }
+      }
 
       rows.push({
         blueprint_id: blueprintId,
