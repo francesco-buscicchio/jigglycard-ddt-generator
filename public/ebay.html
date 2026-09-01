@@ -1,0 +1,1547 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CardTrader → eBay</title>
+<style>
+  :root {
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --border: #dde3ec;
+    --text: #1c2333;
+    --muted: #6b7487;
+    --accent: #0064d2;
+    --accent-dark: #004b9e;
+    --ok: #1e8e3e;
+    --err: #d93025;
+    --warn: #e37400;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header h1 span { color: var(--accent); }
+  .status-pill {
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .status-pill.ok { background: #e6f4ea; color: var(--ok); }
+  .status-pill.err { background: #fce8e6; color: var(--err); }
+  .status-pill.warn { background: #fef7e0; color: var(--warn); }
+  nav { display: flex; gap: 4px; margin-left: auto; }
+  nav button {
+    border: none;
+    background: transparent;
+    padding: 8px 14px;
+    font-size: 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  nav button.active { background: var(--accent); color: #fff; }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 16px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+  input, select, textarea {
+    width: 100%;
+    max-width: 420px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+    color: var(--text);
+  }
+  button.btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 12px;
+  }
+  button.btn:hover { background: var(--accent-dark); }
+  button.btn.secondary { background: #eef1f6; color: var(--text); }
+  button.btn.danger { background: var(--err); }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  tr:hover td { background: #f8fafd; }
+  .toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar > div { flex: 0 0 auto; }
+  .toolbar input { max-width: 220px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: #eef1f6; }
+  .tag.pub { background: #e6f4ea; color: var(--ok); }
+  .tag.unpub { background: #fef7e0; color: var(--warn); }
+  .inv-layout { display: flex; gap: 20px; align-items: flex-start; }
+  .inv-main { flex: 1 1 auto; min-width: 0; }
+  #filterPanel {
+    display: none;
+    flex: 0 0 250px;
+    width: 250px;
+    border: 1px solid var(--border);
+    background: #f8fafd;
+    border-radius: 10px;
+    padding: 14px;
+    position: sticky;
+    top: 12px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+  }
+  #filterPanel.visible { display: block; }
+  #filterPanel h3 { margin: 0 0 10px; font-size: 14px; }
+  .filter-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  @media (max-width: 900px) {
+    .inv-layout { flex-direction: column; }
+    #filterPanel { position: static; width: 100%; flex: 1 1 auto; max-height: none; }
+  }
+  .filter-grid label { margin: 0 0 3px; font-size: 12px; }
+  .filter-grid select, .filter-grid input { max-width: 100%; font-size: 13px; padding: 6px 8px; }
+  .range-pair { display: flex; gap: 6px; }
+  .range-pair input { min-width: 0; }
+  .filter-actions { display: flex; gap: 10px; margin-top: 12px; align-items: center; }
+  .filter-actions .hint { margin: 0; }
+  .price-input {
+    width: 84px; max-width: 84px; text-align: right;
+    padding: 4px 6px; font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .price-input.overridden { border-color: var(--accent); background: #eef6ff; font-weight: 600; }
+  .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); margin-left: 6px; vertical-align: 1px;
+  }
+  .btn-mini {
+    background: #eef1f6; border: 1px solid var(--border); color: var(--text);
+    padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  }
+  .btn-mini:hover { background: #e3e9f2; }
+  #bulkBar {
+    display: none; gap: 10px; align-items: end; flex-wrap: wrap;
+    background: #eef6ff; border: 1px solid #bcd8f5;
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 14px;
+  }
+  #bulkBar.visible { display: flex; }
+  #bulkBar label { margin: 0 0 4px; }
+  #bulkBar select, #bulkBar input { max-width: 200px; }
+  /* Modale dettaglio prodotto */
+  #modalBackdrop {
+    display: none; position: fixed; inset: 0;
+    background: rgba(20, 28, 45, .55); z-index: 20;
+    overflow-y: auto; padding: 30px 16px;
+  }
+  #modalBackdrop.visible { display: block; }
+  .modal {
+    background: var(--card); border-radius: 14px; max-width: 980px;
+    margin: 0 auto; padding: 24px; position: relative;
+  }
+  .modal h2 { margin-top: 0; }
+  .modal-close {
+    position: absolute; top: 14px; right: 16px; border: none;
+    background: transparent; font-size: 22px; cursor: pointer; color: var(--muted);
+  }
+  .modal-grid { display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
+  @media (max-width: 860px) { .modal-grid { grid-template-columns: 1fr; } }
+  .modal-photo {
+    width: 100%; border: 1px solid var(--border); border-radius: 10px;
+    background: #f8fafd; min-height: 280px; object-fit: contain;
+  }
+  .photo-missing {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 280px; border: 1px dashed var(--border); border-radius: 10px;
+    color: var(--muted); font-size: 13px; text-align: center; padding: 12px;
+  }
+  .modal textarea { max-width: 100%; width: 100%; }
+  .modal input { max-width: 100%; }
+  .char-count { font-size: 11px; color: var(--muted); text-align: right; max-width: 100%; }
+  .char-count.over { color: var(--err); font-weight: 600; }
+  /* Anteprima annuncio in stile eBay */
+  .listing-preview {
+    border: 1px solid var(--border); border-radius: 12px; padding: 18px;
+    margin-top: 20px; background: #fff;
+  }
+  .listing-preview .lp-header { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+  .lp-body { display: grid; grid-template-columns: 220px 1fr; gap: 20px; }
+  @media (max-width: 700px) { .lp-body { grid-template-columns: 1fr; } }
+  .lp-photo { width: 100%; border-radius: 8px; border: 1px solid var(--border); background: #f8fafd; object-fit: contain; max-height: 300px; }
+  .lp-title { font-size: 18px; font-weight: 600; line-height: 1.35; margin: 0 0 6px; }
+  .lp-condition { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .lp-price { font-size: 26px; font-weight: 700; margin: 6px 0 12px; }
+  .lp-meta { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .lp-specs { margin-top: 14px; font-size: 13px; }
+  .lp-specs table td { padding: 3px 12px 3px 0; border: none; }
+  .lp-specs td:first-child { color: var(--muted); }
+  .lp-desc { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; font-size: 14px; line-height: 1.5; }
+  .lp-desc p { margin: 0 0 8px; }
+  #toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--text); color: #fff;
+    padding: 12px 18px; border-radius: 10px; font-size: 14px;
+    opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 420px;
+    z-index: 10;
+  }
+  #toast.show { opacity: 1; }
+  .results-list { font-size: 13px; margin-top: 12px; }
+  .results-list li { margin-bottom: 4px; }
+  .ok-text { color: var(--ok); }
+  .err-text { color: var(--err); }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid #fff; border-top-color: transparent;
+    border-radius: 50%; animation: spin .8s linear infinite;
+    vertical-align: -2px; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CardTrader → <span>eBay</span></h1>
+  <span id="statusPill" class="status-pill warn">Verifica…</span>
+  <nav>
+    <button data-tab="connessione" class="active">Connessione</button>
+    <button data-tab="impostazioni">Impostazioni</button>
+    <button data-tab="inventario">Inventario</button>
+    <button data-tab="pubblicati">Pubblicati</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- TAB CONNESSIONE -->
+<section id="tab-connessione">
+  <div class="card">
+    <h2>Stato connessione</h2>
+    <div id="connInfo" class="hint">Caricamento…</div>
+    <button class="btn" id="btnConnect">Collega account eBay</button>
+    <button class="btn danger" id="btnDisconnect" style="display:none">Scollega</button>
+  </div>
+  <div class="card">
+    <h2>Codice di autorizzazione manuale</h2>
+    <p class="hint">
+      Se il redirect eBay non punta a questo server, dopo l'autorizzazione incolla qui
+      l'URL completo della pagina su cui vieni reindirizzato (o solo il parametro <code>code</code>).
+    </p>
+    <input id="authCodeInput" placeholder="https://…?code=v^1.1#i^1…">
+    <button class="btn" id="btnSubmitCode">Conferma codice</button>
+  </div>
+  <div class="card">
+    <h2>Chiave API interna (opzionale)</h2>
+    <p class="hint">Necessaria solo se il server ha INTERNAL_API_KEY impostata.</p>
+    <input id="apiKeyInput" placeholder="x-api-key">
+    <button class="btn secondary" id="btnSaveKey">Salva</button>
+  </div>
+</section>
+
+<!-- TAB IMPOSTAZIONI -->
+<section id="tab-impostazioni" style="display:none">
+  <div class="card">
+    <h2>Policy di vendita e sede</h2>
+    <p class="hint">Le policy si creano una volta sola dal Seller Hub di eBay; qui vengono solo selezionate.</p>
+    <div class="grid2">
+      <div>
+        <label>Policy di spedizione</label>
+        <select id="selFulfillment"></select>
+        <label>Policy di pagamento</label>
+        <select id="selPayment"></select>
+        <label>Policy di reso</label>
+        <select id="selReturn"></select>
+        <label>Sede di spedizione</label>
+        <select id="selLocation"></select>
+      </div>
+      <div>
+        <label>Categoria eBay (ID)</label>
+        <input id="inpCategory" placeholder="183454 (Carte singole CCG)">
+        <label>Ricarico prezzo di default (%)</label>
+        <input id="inpMarkup" type="number" step="0.5" placeholder="es. 10">
+        <label>Immagine di default (URL)</label>
+        <input id="inpDefaultImage" placeholder="https://… (usata se il blueprint non ha immagine)">
+        <label>Testo in coda alla descrizione</label>
+        <textarea id="inpFooter" rows="3" placeholder="Es. spedizione tracciata, carta protetta in sleeve + toploader…"></textarea>
+      </div>
+    </div>
+    <button class="btn" id="btnSaveSettings">Salva impostazioni</button>
+    <button class="btn secondary" id="btnReloadPolicies">Ricarica policy da eBay</button>
+  </div>
+  <div class="card">
+    <h2>Crea sede di spedizione</h2>
+    <p class="hint">eBay richiede almeno una sede (magazzino) per pubblicare. Creala se il menu sopra è vuoto.</p>
+    <div class="grid2">
+      <div>
+        <label>Città</label>
+        <input id="locCity" placeholder="Es. Milano">
+      </div>
+      <div>
+        <label>CAP</label>
+        <input id="locZip" placeholder="Es. 20100">
+      </div>
+    </div>
+    <button class="btn secondary" id="btnCreateLocation">Crea sede</button>
+  </div>
+</section>
+
+<!-- TAB INVENTARIO -->
+<section id="tab-inventario" style="display:none">
+  <div class="card">
+    <h2>Inventario CardTrader</h2>
+    <div class="inv-layout">
+    <aside id="filterPanel" class="visible">
+      <h3>Filtri</h3>
+      <div class="filter-actions" style="margin:0 0 10px">
+        <button class="btn secondary" id="btnResetFilters" style="margin-top:0">Azzera filtri</button>
+      </div>
+      <div class="hint" id="filterCount" style="margin:0 0 10px"></div>
+      <div class="filter-grid" id="filterGrid"></div>
+    </aside>
+    <div class="inv-main">
+    <div class="toolbar">
+      <div>
+        <label>Cerca</label>
+        <input id="invSearch" placeholder="Nome, espansione, SKU…">
+      </div>
+      <div>
+        <button class="btn secondary" id="btnToggleFilters" style="margin-top:0">Filtri ▴</button>
+      </div>
+      <div>
+        <button class="btn secondary" id="btnLoadInventory" style="margin-top:0">Carica inventario</button>
+      </div>
+      <div>
+        <button class="btn secondary" id="btnCompareBulk" disabled style="margin-top:0" title="Confronta i prezzi dei selezionati con le inserzioni attive su eBay (max 50)">Confronta prezzi</button>
+      </div>
+      <div style="margin-left:auto; text-align:right">
+        <button class="btn" id="btnPublish" disabled style="margin-top:0">Pubblica selezionati (0)</button>
+        <label style="font-weight:400; font-size:12px; margin-top:6px; display:block">
+          <input type="checkbox" id="chkRepublish" style="width:auto; vertical-align:-2px">
+          Aggiorna anche i già pubblicati
+        </label>
+      </div>
+    </div>
+    <div id="bulkBar">
+      <div>
+        <label>Modifica massiva sui selezionati</label>
+        <select id="bulkAction">
+          <option value="markup">Ricarico % sul prezzo CardTrader</option>
+          <option value="delta">Aggiungi/Sottrai € al prezzo CardTrader</option>
+          <option value="fixed">Imposta prezzo fisso €</option>
+          <option value="rarity">Listino per rarità (C/U/R fissi, resto ricarico %)</option>
+          <option value="round99">Arrotonda prezzo attuale a ,99</option>
+          <option value="exclude">Escludi da eBay (non pubblicare mai)</option>
+          <option value="include">Rimuovi esclusione</option>
+          <option value="reset">Reimposta modifiche (torna ai valori generati)</option>
+        </select>
+      </div>
+      <div id="bulkValueWrap">
+        <label id="bulkValueLabel">Valore</label>
+        <input id="bulkValue" type="number" step="0.01" style="max-width:110px">
+      </div>
+      <div id="bulkRarityWrap" style="display:none">
+        <label>Common € · Uncommon € · Rare € · Resto ricarico %</label>
+        <div class="range-pair">
+          <input id="rarCommon" type="number" step="0.01" value="0.50" style="max-width:74px" title="Prezzo fisso Common">
+          <input id="rarUncommon" type="number" step="0.01" value="0.75" style="max-width:74px" title="Prezzo fisso Uncommon">
+          <input id="rarRare" type="number" step="0.01" value="1.00" style="max-width:74px" title="Prezzo fisso Rare">
+          <input id="rarRestPct" type="number" step="1" value="50" style="max-width:74px" title="Ricarico % applicato a tutte le altre rarità (diventa il ricarico di default nelle Impostazioni)">
+        </div>
+      </div>
+      <div>
+        <button class="btn" id="btnBulkApply" style="margin-top:0">Applica a selezionati</button>
+      </div>
+      <div class="hint" id="bulkHint" style="margin:0"></div>
+    </div>
+    <div id="invMeta" class="hint"></div>
+    <div style="overflow-x:auto">
+      <table id="invTable">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="invCheckAll"></th>
+            <th>Titolo eBay</th>
+            <th>Espansione</th>
+            <th>Cond.</th>
+            <th>Lingua</th>
+            <th class="num">Qta</th>
+            <th class="num">Prezzo CT €</th>
+            <th class="num">Prezzo eBay €</th>
+            <th>eBay</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <ul id="publishResults" class="results-list"></ul>
+    <div id="bulkCompareResults" style="display:none; margin-top:14px">
+      <h2 style="font-size:15px">Confronto prezzi con i competitor</h2>
+      <div class="hint" id="bulkCompareHint"></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr><th>Prodotto</th><th class="num">Nostro €</th><th class="num">Min competitor €</th><th class="num">Mediana €</th><th class="num">Diff. vs min</th><th class="num">Inserzioni</th><th>Posizione</th></tr>
+          </thead>
+          <tbody id="bulkCompareBody"></tbody>
+        </table>
+      </div>
+    </div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB PUBBLICATI -->
+<section id="tab-pubblicati" style="display:none">
+  <div class="card">
+    <h2>Inserzioni su eBay</h2>
+    <p class="hint">
+      "Sincronizza storico" ricostruisce l'elenco dei già-pubblicati leggendo le
+      offerte reali dal tuo account eBay (utile al primo utilizzo o se lo storico
+      locale si è disallineato).
+    </p>
+    <button class="btn secondary" id="btnLoadOffers">Carica inserzioni</button>
+    <button class="btn secondary" id="btnSyncPublished">Sincronizza storico da eBay</button>
+    <div style="overflow-x:auto; margin-top:12px">
+      <table id="offersTable">
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Titolo</th>
+            <th>Stato</th>
+            <th class="num">Prezzo €</th>
+            <th class="num">Qta</th>
+            <th>Inserzione</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- Modale dettaglio prodotto / anteprima annuncio -->
+<div id="modalBackdrop">
+  <div class="modal">
+    <button class="modal-close" id="modalClose">✕</button>
+    <h2 id="modalTitle">Dettaglio prodotto</h2>
+    <div class="modal-grid">
+      <div>
+        <img id="detailPhoto" class="modal-photo" alt="Foto carta" style="display:none">
+        <div id="detailPhotoMissing" class="photo-missing" style="display:none">
+          Nessuna foto trovata sul blueprint CardTrader.<br>
+          Inserisci un URL immagine qui sotto o un'immagine di default nelle Impostazioni.
+        </div>
+        <label>URL foto personalizzata</label>
+        <input id="detailImageUrl" placeholder="https://… (vuoto = foto blueprint)">
+        <div class="hint" id="detailPhotoSource"></div>
+      </div>
+      <div>
+        <label>Titolo annuncio (max 80 caratteri)</label>
+        <input id="detailTitle" maxlength="80">
+        <div class="char-count" id="detailTitleCount"></div>
+        <label>Descrizione personalizzata (vuota = descrizione generata)</label>
+        <textarea id="detailDescription" rows="6" placeholder="Testo semplice, gli a-capo vengono mantenuti"></textarea>
+        <div class="grid2">
+          <div>
+            <label>Prezzo eBay €</label>
+            <input id="detailPrice" type="number" step="0.01" min="0.01">
+            <div class="hint" id="detailPriceHint"></div>
+          </div>
+          <div>
+            <label>Quantità da pubblicare</label>
+            <input id="detailQuantity" type="number" step="1" min="0">
+            <div class="hint" id="detailQuantityHint"></div>
+          </div>
+        </div>
+        <button class="btn" id="btnDetailSave">Salva modifiche</button>
+        <button class="btn secondary" id="btnDetailReset">Reimposta valori generati</button>
+        <button class="btn secondary" id="btnDetailCompare">Confronta prezzi eBay</button>
+      </div>
+    </div>
+
+    <div class="listing-preview">
+      <div class="lp-header">Anteprima annuncio eBay</div>
+      <div class="lp-body">
+        <img id="lpPhoto" class="lp-photo" alt="" style="display:none">
+        <div>
+          <p class="lp-title" id="lpTitle"></p>
+          <div class="lp-condition" id="lpCondition"></div>
+          <div class="lp-price" id="lpPrice"></div>
+          <div class="lp-meta" id="lpMeta"></div>
+          <div class="lp-specs">
+            <strong>Specifiche oggetto</strong>
+            <table><tbody id="lpSpecs"></tbody></table>
+          </div>
+        </div>
+      </div>
+      <div class="lp-desc">
+        <strong>Descrizione del venditore</strong>
+        <div id="lpDescription"></div>
+      </div>
+    </div>
+
+    <div class="listing-preview" id="compareSection" style="display:none">
+      <div class="lp-header">Confronto con i competitor su eBay</div>
+      <div id="compareSummary" style="font-size:14px; margin-bottom:10px"></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr><th>Inserzione</th><th>Venditore</th><th>Cond.</th><th class="num">Prezzo €</th><th class="num">Sped. €</th><th class="num">Totale €</th></tr>
+          </thead>
+          <tbody id="compareTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = "/api/ebay";
+let inventory = [];
+let selected = new Set();
+let markupPercent = 0;
+
+// --- utilità ---
+function apiHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  const key = localStorage.getItem("internalApiKey");
+  if (key) headers["x-api-key"] = key;
+  return headers;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(API + path, {
+    ...options,
+    headers: { ...apiHeaders(), ...(options.headers || {}) },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || ("Errore HTTP " + response.status));
+  return data;
+}
+
+function toast(message, isError = false) {
+  const el = document.getElementById("toast");
+  el.textContent = message;
+  el.style.background = isError ? "var(--err)" : "var(--text)";
+  el.classList.add("show");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove("show"), 4500);
+}
+
+function fmt(value) {
+  return value == null ? "—" : Number(value).toFixed(2);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"]/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+
+// --- tabs ---
+document.querySelectorAll("nav button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((b) => b.classList.remove("active"));
+    button.classList.add("active");
+    document.querySelectorAll("main > section").forEach((section) => {
+      section.style.display = section.id === "tab-" + button.dataset.tab ? "" : "none";
+    });
+  });
+});
+
+// --- connessione ---
+async function refreshStatus() {
+  const pill = document.getElementById("statusPill");
+  const info = document.getElementById("connInfo");
+  try {
+    const status = await api("/status");
+    if (!status.credentialsConfigured) {
+      pill.textContent = "Credenziali mancanti";
+      pill.className = "status-pill err";
+      info.innerHTML = "Impostare <code>EBAY_CLIENT_ID</code>, <code>EBAY_CLIENT_SECRET</code> e <code>EBAY_RU_NAME</code> nel file <code>.env</code> del server, poi riavviarlo.";
+    } else if (status.connected) {
+      pill.textContent = "Connesso (" + status.environment + ")";
+      pill.className = "status-pill ok";
+      info.textContent = "Account collegato" +
+        (status.connectedAt ? " dal " + new Date(status.connectedAt).toLocaleString("it-IT") : "") +
+        ". Marketplace: " + status.marketplaceId + ".";
+      document.getElementById("btnDisconnect").style.display = "";
+    } else {
+      pill.textContent = "Non connesso";
+      pill.className = "status-pill warn";
+      info.textContent = "Credenziali configurate, ma nessun account collegato. Usa il pulsante qui sotto.";
+    }
+    if (status.settings?.markupPercent != null) {
+      markupPercent = Number(status.settings.markupPercent) || 0;
+    }
+  } catch (error) {
+    pill.textContent = "Server non raggiungibile";
+    pill.className = "status-pill err";
+    info.textContent = error.message;
+  }
+}
+
+document.getElementById("btnConnect").addEventListener("click", async () => {
+  try {
+    const { url } = await api("/auth/url");
+    window.open(url, "_blank");
+    toast("Autorizza l'app su eBay, poi torna qui (o incolla il codice manualmente).");
+  } catch (error) { toast(error.message, true); }
+});
+
+document.getElementById("btnSubmitCode").addEventListener("click", async () => {
+  const code = document.getElementById("authCodeInput").value.trim();
+  if (!code) return toast("Incolla prima il codice o l'URL di redirect.", true);
+  try {
+    await api("/auth/code", { method: "POST", body: JSON.stringify({ code }) });
+    toast("Account eBay collegato ✔");
+    document.getElementById("authCodeInput").value = "";
+    refreshStatus();
+  } catch (error) { toast(error.message, true); }
+});
+
+document.getElementById("btnDisconnect").addEventListener("click", async () => {
+  if (!confirm("Scollegare l'account eBay?")) return;
+  await api("/auth/disconnect", { method: "POST" });
+  document.getElementById("btnDisconnect").style.display = "none";
+  refreshStatus();
+});
+
+document.getElementById("btnSaveKey").addEventListener("click", () => {
+  const key = document.getElementById("apiKeyInput").value.trim();
+  if (key) localStorage.setItem("internalApiKey", key);
+  else localStorage.removeItem("internalApiKey");
+  toast("Chiave salvata nel browser.");
+  refreshStatus();
+});
+document.getElementById("apiKeyInput").value = localStorage.getItem("internalApiKey") || "";
+
+// --- impostazioni ---
+function fillSelect(select, items, currentValue, valueKey, labelKey) {
+  select.innerHTML = '<option value="">— seleziona —</option>' +
+    items.map((item) =>
+      `<option value="${escapeHtml(item[valueKey])}"${String(item[valueKey]) === String(currentValue) ? " selected" : ""}>${escapeHtml(item[labelKey])}</option>`
+    ).join("");
+}
+
+async function loadSettingsTab() {
+  try {
+    const [settings, policies] = await Promise.all([api("/settings"), api("/policies")]);
+    fillSelect(document.getElementById("selFulfillment"), policies.fulfillmentPolicies, settings.fulfillmentPolicyId, "id", "name");
+    fillSelect(document.getElementById("selPayment"), policies.paymentPolicies, settings.paymentPolicyId, "id", "name");
+    fillSelect(document.getElementById("selReturn"), policies.returnPolicies, settings.returnPolicyId, "id", "name");
+    fillSelect(document.getElementById("selLocation"), policies.locations, settings.merchantLocationKey, "key", "name");
+    document.getElementById("inpCategory").value = settings.categoryId || "";
+    document.getElementById("inpMarkup").value = settings.markupPercent ?? "";
+    document.getElementById("inpDefaultImage").value = settings.defaultImageUrl || "";
+    document.getElementById("inpFooter").value = settings.descriptionFooter || "";
+    toast("Impostazioni e policy caricate.");
+  } catch (error) {
+    toast("Impossibile caricare le policy: " + error.message, true);
+  }
+}
+
+document.getElementById("btnReloadPolicies").addEventListener("click", loadSettingsTab);
+
+document.getElementById("btnSaveSettings").addEventListener("click", async () => {
+  try {
+    const settings = await api("/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        fulfillmentPolicyId: document.getElementById("selFulfillment").value || null,
+        paymentPolicyId: document.getElementById("selPayment").value || null,
+        returnPolicyId: document.getElementById("selReturn").value || null,
+        merchantLocationKey: document.getElementById("selLocation").value || null,
+        categoryId: document.getElementById("inpCategory").value.trim() || null,
+        markupPercent: Number(document.getElementById("inpMarkup").value) || 0,
+        defaultImageUrl: document.getElementById("inpDefaultImage").value.trim() || null,
+        descriptionFooter: document.getElementById("inpFooter").value.trim() || null,
+      }),
+    });
+    markupPercent = Number(settings.markupPercent) || 0;
+    toast("Impostazioni salvate ✔");
+  } catch (error) { toast(error.message, true); }
+});
+
+document.getElementById("btnCreateLocation").addEventListener("click", async () => {
+  try {
+    await api("/locations", {
+      method: "POST",
+      body: JSON.stringify({
+        city: document.getElementById("locCity").value.trim(),
+        postalCode: document.getElementById("locZip").value.trim(),
+      }),
+    });
+    toast("Sede creata ✔");
+    loadSettingsTab();
+  } catch (error) { toast(error.message, true); }
+});
+
+// carica le impostazioni la prima volta che si apre la tab
+document.querySelector('nav button[data-tab="impostazioni"]').addEventListener("click", () => {
+  if (!document.getElementById("selFulfillment").options.length) loadSettingsTab();
+}, { once: false });
+
+// --- inventario ---
+// --- filtri ---
+// I filtri sulle proprietà CardTrader (condizione, lingua, rarità, foil,
+// reverse, firmata, prima edizione…) vengono generati dinamicamente dalle
+// proprietà realmente presenti nell'inventario caricato.
+const PROP_LABELS = {
+  condition: "Condizione",
+  language: "Lingua",
+  rarity: "Rarità",
+  foil: "Foil",
+  reverse: "Reverse",
+  signed: "Firmata",
+  altered: "Alterata",
+  first_edition: "Prima edizione",
+  collector_number: "Numero collezione",
+};
+const GAME_PREFIXES = /^(mtg|pokemon|onepiece|dragonball|ygo|yugioh|lorcana|fab|ff|digimon|swu|vanguard|ws|gundam|riftbound|sorcery|altered_tcg)_/i;
+
+function propLabel(key) {
+  const bareKey = key.replace(GAME_PREFIXES, "");
+  if (PROP_LABELS[bareKey.toLowerCase()]) return PROP_LABELS[bareKey.toLowerCase()];
+  const pretty = bareKey.replace(/_/g, " ");
+  return pretty.charAt(0).toUpperCase() + pretty.slice(1);
+}
+
+function formatPropValue(value) {
+  if (value === true || value === "true") return "Sì";
+  if (value === false || value === "false") return "No";
+  return String(value);
+}
+
+function buildFilterPanel() {
+  const grid = document.getElementById("filterGrid");
+
+  // Il pannello viene rigenerato a ogni ricaricamento dell'inventario (anche
+  // dopo le modifiche massive): i valori impostati vanno preservati.
+  const savedValues = {};
+  grid.querySelectorAll(".flt").forEach((control) => {
+    const key = control.id || `pk:${control.dataset.propKeys}`;
+    if (control.value && control.value.trim()) savedValues[key] = control.value;
+  });
+
+  // Facce statiche: espansione, tag e valori distinti per ogni proprietà.
+  const expansions = [...new Set(inventory.map((item) => item.expansion).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  const tags = [...new Set(inventory.map((item) => item.tag).filter(Boolean))].sort();
+  // Le proprietà vengono raggruppate per etichetta: pokemon_language e
+  // mtg_language finiscono nello stesso filtro "Lingua".
+  const propGroups = new Map();
+  for (const item of inventory) {
+    for (const [key, value] of Object.entries(item.properties || {})) {
+      if (value === null || value === "" || typeof value === "undefined") continue;
+      const label = propLabel(key);
+      if (!propGroups.has(label)) propGroups.set(label, { keys: new Set(), values: new Set() });
+      const group = propGroups.get(label);
+      group.keys.add(key);
+      group.values.add(String(value));
+    }
+  }
+
+  const selectHtml = (id, label, options, { dataKey = "" } = {}) => `
+    <div>
+      <label>${escapeHtml(label)}</label>
+      <select id="${id}" aria-label="${escapeHtml(label)}" ${dataKey ? `data-prop-keys="${escapeHtml(dataKey)}"` : ""} class="flt">
+        <option value="">Tutte</option>
+        ${options.map(([value, text]) => `<option value="${escapeHtml(value)}">${escapeHtml(text)}</option>`).join("")}
+      </select>
+    </div>`;
+
+  const rangeHtml = (idPrefix, label, step = "0.01") => `
+    <div>
+      <label>${escapeHtml(label)}</label>
+      <div class="range-pair">
+        <input id="${idPrefix}Min" class="flt" type="number" step="${step}" placeholder="min">
+        <input id="${idPrefix}Max" class="flt" type="number" step="${step}" placeholder="max">
+      </div>
+    </div>`;
+
+  const yesNo = [["yes", "Sì"], ["no", "No"]];
+  let html = "";
+  html += selectHtml("fltExpansion", "Espansione", expansions.map((name) => [name, name]));
+  html += rangeHtml("fltCtPrice", "Prezzo CardTrader €");
+  html += rangeHtml("fltEbayPrice", "Prezzo eBay €");
+  html += rangeHtml("fltQty", "Quantità", "1");
+  html += selectHtml("fltExcluded", "Esclusi da eBay", [
+    ["hide", "Nascondi esclusi"],
+    ["only", "Solo esclusi"],
+  ]);
+  html += selectHtml("fltEbayStatus", "Su eBay", [
+    ["published", "Pubblicati"],
+    ["withdrawn", "Ritirati"],
+    ["never", "Mai pubblicati"],
+    ["not-published", "Non attivi (ritirati + mai pubblicati)"],
+  ]);
+  html += selectHtml("fltModified", "Modificati", [["yes", "Solo modificati"], ["no", "Solo non modificati"]]);
+  html += selectHtml("fltGraded", "Gradata", yesNo);
+  html += selectHtml("fltBundle", "Bundle", yesNo);
+  if (tags.length) html += selectHtml("fltTag", "Tag", tags.map((tag) => [tag, tag]));
+
+  // Filtri dinamici: uno per ogni proprietà CardTrader trovata nell'inventario.
+  const sortedLabels = [...propGroups.keys()].sort((a, b) => a.localeCompare(b));
+  for (const label of sortedLabels) {
+    const group = propGroups.get(label);
+    const keysAttr = [...group.keys].join(",");
+    const values = [...group.values];
+    const isNumericSet = values.every((value) => Number.isFinite(Number(value)));
+    values.sort(isNumericSet ? (a, b) => Number(a) - Number(b) : (a, b) => formatPropValue(a).localeCompare(formatPropValue(b)));
+    const domId = `fltProp-${label.replace(/[^a-z0-9]/gi, "_")}`;
+
+    if (values.length > 60) {
+      // Troppi valori distinti per una tendina: campo libero con suggerimenti.
+      html += `
+        <div>
+          <label>${escapeHtml(label)}</label>
+          <input class="flt" aria-label="${escapeHtml(label)}" list="dl-${domId}" data-prop-keys="${escapeHtml(keysAttr)}" placeholder="Tutte">
+          <datalist id="dl-${domId}">
+            ${values.slice(0, 1000).map((value) => `<option value="${escapeHtml(value)}">`).join("")}
+          </datalist>
+        </div>`;
+    } else {
+      html += selectHtml(domId, label,
+        values.map((value) => [value, formatPropValue(value)]), { dataKey: keysAttr });
+    }
+  }
+
+  grid.innerHTML = html;
+  grid.querySelectorAll(".flt").forEach((control) => {
+    const key = control.id || `pk:${control.dataset.propKeys}`;
+    if (savedValues[key] != null) control.value = savedValues[key];
+    control.addEventListener(control.tagName === "SELECT" ? "change" : "input", renderInventory);
+  });
+}
+
+function rangeValue(id) {
+  const value = Number(document.getElementById(id)?.value);
+  return document.getElementById(id)?.value !== "" && Number.isFinite(value) ? value : null;
+}
+
+function selectValue(id) {
+  return document.getElementById(id)?.value || "";
+}
+
+function matchesYesNo(filterValue, actual) {
+  if (!filterValue) return true;
+  return filterValue === "yes" ? Boolean(actual) : !actual;
+}
+
+function publishedTag(published, excluded) {
+  if (excluded) return '<span class="tag" title="Escluso dalla pubblicazione su eBay">Escluso</span>';
+  if (!published) return '<span class="hint" style="margin:0">—</span>';
+  const date = published.lastPublishedAt
+    ? new Date(published.lastPublishedAt).toLocaleDateString("it-IT")
+    : "";
+  if (published.status === "PUBLISHED") {
+    const label = `<span class="tag pub" title="Pubblicato il ${date}">Pubblicato</span>`;
+    return published.listingId
+      ? `<a href="https://www.ebay.it/itm/${escapeHtml(published.listingId)}" target="_blank" style="text-decoration:none">${label}</a>`
+      : label;
+  }
+  return `<span class="tag unpub" title="Ultimo aggiornamento ${date}">${published.status === "WITHDRAWN" ? "Ritirato" : "Non attivo"}</span>`;
+}
+
+function getVisibleItems() {
+  const search = document.getElementById("invSearch").value.trim().toLowerCase();
+  const expansion = selectValue("fltExpansion");
+  const excludedFilter = selectValue("fltExcluded");
+  const ebayStatus = selectValue("fltEbayStatus");
+  const modified = selectValue("fltModified");
+  const graded = selectValue("fltGraded");
+  const bundle = selectValue("fltBundle");
+  const tag = selectValue("fltTag");
+  const ctMin = rangeValue("fltCtPriceMin"), ctMax = rangeValue("fltCtPriceMax");
+  const ebMin = rangeValue("fltEbayPriceMin"), ebMax = rangeValue("fltEbayPriceMax");
+  const qtyMin = rangeValue("fltQtyMin"), qtyMax = rangeValue("fltQtyMax");
+
+  const propFilters = [];
+  document.querySelectorAll("#filterGrid [data-prop-keys]").forEach((control) => {
+    const value = control.value.trim();
+    if (value) propFilters.push([control.dataset.propKeys.split(","), value.toLowerCase()]);
+  });
+
+  return inventory.filter((item) => {
+    if (search && !(`${item.title} ${item.expansion || ""} ${item.sku}`).toLowerCase().includes(search)) return false;
+    if (expansion && item.expansion !== expansion) return false;
+    if (excludedFilter === "hide" && item.excluded) return false;
+    if (excludedFilter === "only" && !item.excluded) return false;
+    if (ebayStatus) {
+      const status = item.published?.status ?? null;
+      if (ebayStatus === "published" && status !== "PUBLISHED") return false;
+      if (ebayStatus === "withdrawn" && status !== "WITHDRAWN") return false;
+      if (ebayStatus === "never" && status !== null) return false;
+      if (ebayStatus === "not-published" && status === "PUBLISHED") return false;
+    }
+    if (modified && !matchesYesNo(modified, item.hasOverrides)) return false;
+    if (graded && !matchesYesNo(graded, item.graded)) return false;
+    if (bundle && !matchesYesNo(bundle, item.bundle)) return false;
+    if (tag && item.tag !== tag) return false;
+    if (ctMin !== null && (item.cardTraderPriceEur ?? -Infinity) < ctMin) return false;
+    if (ctMax !== null && (item.cardTraderPriceEur ?? Infinity) > ctMax) return false;
+    if (ebMin !== null && (item.ebayPriceEur ?? -Infinity) < ebMin) return false;
+    if (ebMax !== null && (item.ebayPriceEur ?? Infinity) > ebMax) return false;
+    if (qtyMin !== null && item.quantity < qtyMin) return false;
+    if (qtyMax !== null && item.quantity > qtyMax) return false;
+    for (const [keys, value] of propFilters) {
+      const matchesAnyKey = keys.some(
+        (key) => String(item.properties?.[key] ?? "").toLowerCase() === value,
+      );
+      if (!matchesAnyKey) return false;
+    }
+    return true;
+  });
+}
+
+function countActiveFilters() {
+  let count = 0;
+  document.querySelectorAll("#filterGrid .flt").forEach((control) => {
+    if (control.value && control.value.trim()) count += 1;
+  });
+  return count;
+}
+
+document.getElementById("btnToggleFilters").addEventListener("click", () => {
+  const panel = document.getElementById("filterPanel");
+  panel.classList.toggle("visible");
+  document.getElementById("btnToggleFilters").textContent =
+    panel.classList.contains("visible") ? "Filtri ▴" : "Filtri ▾";
+});
+
+document.getElementById("btnResetFilters").addEventListener("click", () => {
+  document.querySelectorAll("#filterGrid .flt").forEach((control) => {
+    control.value = "";
+  });
+  document.getElementById("invSearch").value = "";
+  renderInventory();
+});
+
+function renderInventory() {
+  const tbody = document.querySelector("#invTable tbody");
+  const visible = getVisibleItems();
+  const activeFilters = countActiveFilters();
+  document.getElementById("filterCount").textContent =
+    activeFilters > 0 ? `${activeFilters} filtri attivi — ${visible.length} risultati` : "";
+
+  tbody.innerHTML = visible.slice(0, 500).map((item) => `
+    <tr>
+      <td><input type="checkbox" data-id="${item.productId}" ${selected.has(item.productId) ? "checked" : ""}></td>
+      <td title="SKU: ${escapeHtml(item.sku)}">${escapeHtml(item.title)}${item.hasOverrides ? '<span class="dot" title="Modificato: ' + escapeHtml(item.overriddenFields.join(", ")) + '"></span>' : ""}</td>
+      <td>${escapeHtml(item.expansion || "—")}</td>
+      <td>${escapeHtml(item.cardTraderCondition || "—")}</td>
+      <td>${escapeHtml((item.language || "—").toUpperCase())}</td>
+      <td class="num">${item.quantity}</td>
+      <td class="num">${fmt(item.cardTraderPriceEur)}</td>
+      <td class="num"><input class="price-input${item.overriddenFields.includes("price") ? " overridden" : ""}" type="number" step="0.01" min="0.01" data-price-id="${item.productId}" value="${item.ebayPriceEur ?? ""}"></td>
+      <td>${publishedTag(item.published, item.excluded)}</td>
+      <td><button class="btn-mini" data-detail-id="${item.productId}">Dettagli</button></td>
+    </tr>`).join("");
+
+  document.getElementById("invMeta").textContent =
+    `${visible.length} prodotti visibili su ${inventory.length} totali` +
+    (visible.length > 500 ? " (mostrati i primi 500)" : "") +
+    (markupPercent ? ` — ricarico applicato: ${markupPercent}%` : "");
+
+  tbody.querySelectorAll("input[type=checkbox]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const id = Number(checkbox.dataset.id);
+      if (checkbox.checked) selected.add(id); else selected.delete(id);
+      updatePublishButton();
+    });
+  });
+
+  // Prezzo modificabile inline: salvataggio su Enter o quando si esce dal campo.
+  tbody.querySelectorAll("input[data-price-id]").forEach((input) => {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") input.blur();
+    });
+    input.addEventListener("change", async () => {
+      const id = Number(input.dataset.priceId);
+      const value = Number(input.value);
+      if (!Number.isFinite(value) || value <= 0) {
+        toast("Prezzo non valido.", true);
+        return;
+      }
+      try {
+        await saveOverrides({ [id]: { price: value } });
+        const item = inventory.find((row) => row.productId === id);
+        if (item) {
+          item.ebayPriceEur = value;
+          if (!item.overriddenFields.includes("price")) item.overriddenFields.push("price");
+          item.hasOverrides = true;
+        }
+        input.classList.add("overridden");
+        toast(`Prezzo salvato: €${value.toFixed(2)}`);
+      } catch (error) { toast(error.message, true); }
+    });
+  });
+
+  tbody.querySelectorAll("button[data-detail-id]").forEach((button) => {
+    button.addEventListener("click", () => openDetail(Number(button.dataset.detailId)));
+  });
+}
+
+async function saveOverrides(overrides) {
+  return api("/overrides", {
+    method: "PUT",
+    body: JSON.stringify({ overrides }),
+  });
+}
+
+const POSITION_LABELS = {
+  cheapest: ["Più economico ✔", "ok-text"],
+  "below-median": ["Sotto la mediana", "ok-text"],
+  "above-median": ["Sopra la mediana", "err-text"],
+};
+
+function updatePublishButton() {
+  const button = document.getElementById("btnPublish");
+  button.textContent = `Pubblica selezionati (${selected.size})`;
+  button.disabled = selected.size === 0;
+  const compareButton = document.getElementById("btnCompareBulk");
+  compareButton.disabled = selected.size === 0 || selected.size > 50;
+  compareButton.textContent = selected.size > 50
+    ? "Confronta prezzi (max 50)"
+    : `Confronta prezzi (${selected.size})`;
+  document.getElementById("bulkBar").classList.toggle("visible", selected.size > 0);
+  document.getElementById("bulkHint").textContent =
+    selected.size > 0 ? `${selected.size} prodotti selezionati` : "";
+}
+
+// --- modifiche massive ---
+const BULK_LABELS = {
+  markup: "Ricarico %",
+  delta: "Delta € (anche negativo)",
+  fixed: "Prezzo fisso €",
+};
+
+document.getElementById("bulkAction").addEventListener("change", () => {
+  const action = document.getElementById("bulkAction").value;
+  const needsValue = action in BULK_LABELS;
+  document.getElementById("bulkValueWrap").style.display = needsValue ? "" : "none";
+  document.getElementById("bulkRarityWrap").style.display = action === "rarity" ? "" : "none";
+  if (needsValue) document.getElementById("bulkValueLabel").textContent = BULK_LABELS[action];
+});
+
+// Rarità del prodotto (qualsiasi gioco): valore della prima proprietà *_rarity.
+function getItemRarity(item) {
+  const key = Object.keys(item.properties || {}).find((k) =>
+    k.toLowerCase().endsWith("rarity"),
+  );
+  return key ? String(item.properties[key]).trim().toLowerCase() : null;
+}
+
+document.getElementById("btnBulkApply").addEventListener("click", async () => {
+  const action = document.getElementById("bulkAction").value;
+  const value = Number(document.getElementById("bulkValue").value);
+  const ids = [...selected];
+  if (ids.length === 0) return;
+
+  if ((action in BULK_LABELS) && !Number.isFinite(value)) {
+    return toast("Inserisci un valore numerico.", true);
+  }
+
+  let rarityPrices = null;
+  if (action === "rarity") {
+    rarityPrices = {
+      common: Number(document.getElementById("rarCommon").value),
+      uncommon: Number(document.getElementById("rarUncommon").value),
+      rare: Number(document.getElementById("rarRare").value),
+      restPct: Number(document.getElementById("rarRestPct").value),
+    };
+    if (![rarityPrices.common, rarityPrices.uncommon, rarityPrices.rare].every((p) => Number.isFinite(p) && p > 0) ||
+        !Number.isFinite(rarityPrices.restPct)) {
+      return toast("Inserisci prezzi validi per Common/Uncommon/Rare e il ricarico % per il resto.", true);
+    }
+    if (!confirm(
+      `Applicare il listino ai selezionati?\n` +
+      `Common → €${rarityPrices.common.toFixed(2)} · Uncommon → €${rarityPrices.uncommon.toFixed(2)} · Rare → €${rarityPrices.rare.toFixed(2)}\n` +
+      `Fixed: ricarico ${rarityPrices.restPct}% con prezzo minimo €${rarityPrices.rare.toFixed(2)}. Senza rarità (sigillati) ed esclusi: non toccati.\n` +
+      `Tutte le altre rarità: nessun prezzo fisso, seguiranno il ricarico di default ${rarityPrices.restPct}% sul prezzo CardTrader (aggiornato nelle Impostazioni).`,
+    )) return;
+  }
+  if (action === "reset" &&
+      !confirm(`Reimpostare ${ids.length} prodotti ai valori generati (prezzo, titolo, descrizione, foto)?`)) {
+    return;
+  }
+
+  const overrides = {};
+  for (const id of ids) {
+    const item = inventory.find((row) => row.productId === id);
+    if (!item) continue;
+    const base = item.cardTraderPriceEur;
+
+    if (action === "reset") {
+      overrides[id] = null;
+    } else if (action === "fixed") {
+      overrides[id] = { price: Number(value.toFixed(2)) };
+    } else if (action === "markup") {
+      if (base == null) continue;
+      overrides[id] = { price: Number((base * (1 + value / 100)).toFixed(2)) };
+    } else if (action === "delta") {
+      if (base == null) continue;
+      const price = Number((base + value).toFixed(2));
+      if (price <= 0) continue;
+      overrides[id] = { price };
+    } else if (action === "exclude") {
+      overrides[id] = { excluded: true };
+    } else if (action === "include") {
+      overrides[id] = { excluded: null };
+    } else if (action === "rarity") {
+      if (item.excluded) continue; // gli esclusi non vengono prezzati
+      const rarity = getItemRarity(item);
+      if (!rarity) continue; // senza rarità (sigillati): il listino non li tratta
+      if (rarity === "common") overrides[id] = { price: Number(rarityPrices.common.toFixed(2)) };
+      else if (rarity === "uncommon") overrides[id] = { price: Number(rarityPrices.uncommon.toFixed(2)) };
+      else if (rarity === "rare") overrides[id] = { price: Number(rarityPrices.rare.toFixed(2)) };
+      else if (rarity === "fixed") {
+        // Fixed: seguono CT + ricarico, ma con prezzo minimo pari al prezzo Rare.
+        const computed = base != null ? base * (1 + rarityPrices.restPct / 100) : null;
+        overrides[id] = computed != null && computed < rarityPrices.rare
+          ? { price: Number(rarityPrices.rare.toFixed(2)) }
+          : { price: null };
+      }
+      // Le altre rarità non ricevono un prezzo fisso: se avevano un override
+      // di prezzo lo si rimuove, cosi' tornano a seguire il ricarico di default.
+      else overrides[id] = { price: null };
+    } else if (action === "round99") {
+      const current = item.ebayPriceEur;
+      if (current == null) continue;
+      let price = Math.floor(current) + 0.99;
+      if (price - current > 0.99) price -= 1; // non alzare mai di più di 99 cent
+      if (price <= 0) price = 0.99;
+      overrides[id] = { price: Number(price.toFixed(2)) };
+    }
+  }
+
+  if (Object.keys(overrides).length === 0) {
+    return toast("Nessun prodotto valido per questa operazione.", true);
+  }
+
+  try {
+    await saveOverrides(overrides);
+    if (action === "rarity") {
+      // Il ricarico "per il resto" diventa il ricarico di default: le carte
+      // senza prezzo fisso seguono sempre il prezzo CardTrader corrente.
+      await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ markupPercent: rarityPrices.restPct }),
+      });
+      markupPercent = rarityPrices.restPct;
+    }
+    toast(`Modifica applicata a ${Object.keys(overrides).length} prodotti ✔`);
+    await reloadInventory();
+  } catch (error) { toast(error.message, true); }
+});
+
+async function reloadInventory({ force = false } = {}) {
+  // Il ricarico di default e' applicato dal server (settings.markupPercent).
+  const data = await api(`/inventory${force ? "?force=true" : ""}`);
+  inventory = data.items;
+  buildFilterPanel();
+  renderInventory();
+}
+
+document.getElementById("btnLoadInventory").addEventListener("click", async () => {
+  const button = document.getElementById("btnLoadInventory");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Caricamento…';
+  try {
+    await reloadInventory({ force: true });
+    selected.clear();
+    updatePublishButton();
+    renderInventory();
+    toast(`Inventario caricato: ${inventory.length} prodotti.`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Carica inventario";
+  }
+});
+
+document.getElementById("invSearch").addEventListener("input", renderInventory);
+
+// Seleziona/deseleziona tutti i prodotti che passano i filtri correnti
+// (non solo i 500 mostrati in tabella).
+document.getElementById("invCheckAll").addEventListener("change", (event) => {
+  for (const item of getVisibleItems()) {
+    if (event.target.checked) selected.add(item.productId);
+    else selected.delete(item.productId);
+  }
+  updatePublishButton();
+  renderInventory();
+});
+
+document.getElementById("btnPublish").addEventListener("click", async () => {
+  if (selected.size === 0) return;
+
+  const republish = document.getElementById("chkRepublish").checked;
+  const alreadyPublished = [...selected].filter((id) =>
+    inventory.find((item) => item.productId === id)?.published?.status === "PUBLISHED",
+  ).length;
+
+  let message = `Pubblicare ${selected.size} prodotti su eBay?`;
+  if (alreadyPublished > 0) {
+    message += republish
+      ? `\n${alreadyPublished} risultano già pubblicati e verranno AGGIORNATI (prezzo/quantità/descrizione).`
+      : `\n${alreadyPublished} risultano già pubblicati e verranno saltati.`;
+  }
+  if (!confirm(message)) return;
+
+  const button = document.getElementById("btnPublish");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Pubblicazione in corso…';
+  const list = document.getElementById("publishResults");
+  list.innerHTML = "";
+
+  try {
+    const outcome = await api("/publish", {
+      method: "POST",
+      body: JSON.stringify({
+        productIds: [...selected],
+        skipPublished: !republish,
+      }),
+    });
+    toast(`Pubblicati ${outcome.succeeded}/${outcome.total} prodotti` +
+      (outcome.skipped ? ` — ${outcome.skipped} saltati (già pubblicati)` : "") +
+      (outcome.failed ? ` — ${outcome.failed} errori (dettagli sotto la tabella).` : " ✔"));
+    list.innerHTML = outcome.results.map((result) => {
+      if (result.excluded) {
+        return `<li>⛔ ${escapeHtml(result.sku)} — saltato: escluso da eBay</li>`;
+      }
+      if (result.skipped) {
+        return `<li>⏭ ${escapeHtml(result.sku)} — saltato: già pubblicato${result.listingId ? " (inserzione " + escapeHtml(result.listingId) + ")" : ""}</li>`;
+      }
+      return result.ok
+        ? `<li class="ok-text">✔ ${escapeHtml(result.sku)} — ${result.updated ? "aggiornato" : "pubblicato"}${result.listingId ? " (inserzione " + escapeHtml(result.listingId) + ")" : ""} a €${fmt(result.priceEur)}</li>`
+        : `<li class="err-text">✘ ${escapeHtml(result.sku || result.productId)} — ${escapeHtml(result.error)}</li>`;
+    }).join("");
+    selected.clear();
+    updatePublishButton();
+    await reloadInventory();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = selected.size === 0;
+    updatePublishButton();
+  }
+});
+
+// --- confronto prezzi massivo ---
+document.getElementById("btnCompareBulk").addEventListener("click", async () => {
+  if (selected.size === 0 || selected.size > 50) return;
+  const button = document.getElementById("btnCompareBulk");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Confronto in corso…';
+
+  try {
+    const outcome = await api("/compare", {
+      method: "POST",
+      body: JSON.stringify({ productIds: [...selected] }),
+    });
+
+    const wrap = document.getElementById("bulkCompareResults");
+    wrap.style.display = "";
+    document.getElementById("bulkCompareHint").textContent =
+      `${outcome.succeeded} confrontati` + (outcome.failed ? `, ${outcome.failed} errori` : "") +
+      " — totale = prezzo + spedizione delle inserzioni attive più economiche su eBay.";
+
+    document.getElementById("bulkCompareBody").innerHTML = outcome.results.map((row) => {
+      if (!row.ok) {
+        return `<tr><td>${escapeHtml(row.sku || row.productId)}</td><td colspan="6" class="err-text">${escapeHtml(row.error)}</td></tr>`;
+      }
+      const [label, cls] = POSITION_LABELS[row.position] ?? ["—", ""];
+      const delta = row.deltaVsMinPercent;
+      return `<tr>
+        <td>${escapeHtml(row.title ?? row.sku)}</td>
+        <td class="num"><strong>${fmt(row.ourPrice)}</strong></td>
+        <td class="num">${fmt(row.minTotal)}</td>
+        <td class="num">${fmt(row.medianTotal)}</td>
+        <td class="num ${delta > 0 ? "err-text" : "ok-text"}">${delta == null ? "—" : (delta > 0 ? "+" : "") + delta + "%"}</td>
+        <td class="num">${row.competitorCount}</td>
+        <td><span class="${cls}">${label}</span></td>
+      </tr>`;
+    }).join("");
+    wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    toast(`Confronto completato per ${outcome.succeeded} prodotti ✔`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = selected.size === 0;
+    updatePublishButton();
+  }
+});
+
+// --- dettaglio prodotto / anteprima annuncio ---
+let detailData = null;
+
+function closeDetail() {
+  document.getElementById("modalBackdrop").classList.remove("visible");
+  detailData = null;
+}
+document.getElementById("modalClose").addEventListener("click", closeDetail);
+document.getElementById("modalBackdrop").addEventListener("click", (event) => {
+  if (event.target.id === "modalBackdrop") closeDetail();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDetail();
+});
+
+async function openDetail(productId) {
+  try {
+    toast("Caricamento dettaglio…");
+    detailData = await api(`/inventory/${productId}/preview`);
+  } catch (error) {
+    return toast(error.message, true);
+  }
+
+  document.getElementById("modalTitle").textContent =
+    `${detailData.sku} — ${detailData.expansion || "Senza espansione"}`;
+  document.getElementById("detailTitle").value = detailData.title || "";
+  document.getElementById("detailDescription").value = detailData.override.description || "";
+  document.getElementById("detailPrice").value = detailData.ebayPriceEur ?? "";
+  document.getElementById("detailQuantity").value = detailData.quantity ?? "";
+  document.getElementById("detailImageUrl").value = detailData.override.imageUrl || "";
+  document.getElementById("detailPriceHint").textContent =
+    `Prezzo CardTrader: €${fmt(detailData.cardTraderPriceEur)} — generato: €${fmt(detailData.generated.priceEur)}`;
+  document.getElementById("detailQuantityHint").textContent =
+    `Disponibili su CardTrader: ${detailData.cardTraderQuantity} (limite massimo)`;
+  document.getElementById("detailPhotoSource").textContent = detailData.blueprintImageUrl
+    ? "Foto trovata sul blueprint CardTrader."
+    : "Nessuna foto sul blueprint: serve un URL personalizzato o l'immagine di default.";
+
+  document.getElementById("compareSection").style.display = "none";
+  renderDetailPreview();
+  document.getElementById("modalBackdrop").classList.add("visible");
+}
+
+// Aggiorna la foto grande e l'anteprima annuncio in base ai campi correnti.
+function renderDetailPreview() {
+  if (!detailData) return;
+
+  const title = document.getElementById("detailTitle").value.trim() || detailData.generated.title;
+  const customDescription = document.getElementById("detailDescription").value.trim();
+  const price = Number(document.getElementById("detailPrice").value) || detailData.ebayPriceEur;
+  const quantity = Number(document.getElementById("detailQuantity").value);
+  const imageUrl = document.getElementById("detailImageUrl").value.trim() ||
+    detailData.blueprintImageUrl || detailData.imageUrl;
+
+  const count = document.getElementById("detailTitleCount");
+  const titleLength = document.getElementById("detailTitle").value.length;
+  count.textContent = `${titleLength}/80`;
+  count.classList.toggle("over", titleLength >= 80);
+
+  const photo = document.getElementById("detailPhoto");
+  const photoMissing = document.getElementById("detailPhotoMissing");
+  const lpPhoto = document.getElementById("lpPhoto");
+  if (imageUrl) {
+    photo.src = imageUrl; photo.style.display = "";
+    lpPhoto.src = imageUrl; lpPhoto.style.display = "";
+    photoMissing.style.display = "none";
+  } else {
+    photo.style.display = "none";
+    lpPhoto.style.display = "none";
+    photoMissing.style.display = "flex";
+  }
+
+  document.getElementById("lpTitle").textContent = title;
+  document.getElementById("lpCondition").textContent =
+    `Condizione: ${detailData.cardTraderCondition || "—"} (eBay: ${detailData.condition})`;
+  document.getElementById("lpPrice").textContent = `EUR ${fmt(price)}`;
+  document.getElementById("lpMeta").textContent =
+    `Quantità: ${Number.isFinite(quantity) ? quantity : detailData.quantity} · Categoria ${detailData.categoryId} · SKU ${detailData.sku}`;
+
+  document.getElementById("lpSpecs").innerHTML = Object.entries(detailData.aspects || {})
+    .map(([key, values]) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml([].concat(values).join(", "))}</td></tr>`)
+    .join("");
+
+  // La descrizione generata arriva dal server già come HTML sicuro (escapata);
+  // quella personalizzata è testo semplice convertito con gli a-capo.
+  document.getElementById("lpDescription").innerHTML = customDescription
+    ? `<p>${escapeHtml(customDescription).replace(/\n/g, "<br>")}</p>${detailData.descriptionFooter ? `<p>${detailData.descriptionFooter}</p>` : ""}`
+    : (customDescription === "" && detailData.override.description
+        ? detailData.generated.descriptionHtml
+        : detailData.descriptionHtml);
+}
+
+["detailTitle", "detailDescription", "detailPrice", "detailQuantity", "detailImageUrl"]
+  .forEach((id) => document.getElementById(id).addEventListener("input", renderDetailPreview));
+
+document.getElementById("btnDetailSave").addEventListener("click", async () => {
+  if (!detailData) return;
+  const title = document.getElementById("detailTitle").value.trim();
+  const description = document.getElementById("detailDescription").value.trim();
+  const price = Number(document.getElementById("detailPrice").value);
+  const quantity = Number(document.getElementById("detailQuantity").value);
+  const imageUrl = document.getElementById("detailImageUrl").value.trim();
+
+  if (!Number.isFinite(price) || price <= 0) return toast("Prezzo non valido.", true);
+
+  // Un campo uguale al valore generato non viene salvato come override.
+  const override = {
+    title: title && title !== detailData.generated.title ? title : null,
+    description: description || null,
+    price: price !== detailData.generated.priceEur ? price : null,
+    quantity: Number.isFinite(quantity) && quantity !== detailData.cardTraderQuantity
+      ? Math.min(quantity, detailData.cardTraderQuantity) : null,
+    imageUrl: imageUrl || null,
+  };
+
+  try {
+    await saveOverrides({ [detailData.productId]: override });
+    toast("Modifiche salvate ✔");
+    closeDetail();
+    await reloadInventory();
+  } catch (error) { toast(error.message, true); }
+});
+
+document.getElementById("btnDetailCompare").addEventListener("click", async () => {
+  if (!detailData) return;
+  const button = document.getElementById("btnDetailCompare");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Confronto…';
+
+  try {
+    const outcome = await api(`/inventory/${detailData.productId}/compare`);
+    const section = document.getElementById("compareSection");
+    section.style.display = "";
+
+    const [label, cls] = POSITION_LABELS[outcome.position] ?? ["Nessun competitor trovato", ""];
+    document.getElementById("compareSummary").innerHTML =
+      `Nostro prezzo: <strong>€${fmt(outcome.ourPrice)}</strong> · ` +
+      `Min competitor (totale): <strong>€${fmt(outcome.minTotal)}</strong> · ` +
+      `Mediana: €${fmt(outcome.medianTotal)} · ` +
+      `<span class="${cls}">${label}${outcome.deltaVsMinPercent != null ? ` (${outcome.deltaVsMinPercent > 0 ? "+" : ""}${outcome.deltaVsMinPercent}% vs min)` : ""}</span>` +
+      `<div class="hint">Ricerca: "${escapeHtml(outcome.query)}" — ${outcome.competitorCount} inserzioni attive trovate</div>`;
+
+    document.getElementById("compareTableBody").innerHTML = outcome.competitors.map((c) => `
+      <tr>
+        <td>${c.url ? `<a href="${escapeHtml(c.url)}" target="_blank">${escapeHtml(c.title)}</a>` : escapeHtml(c.title)}</td>
+        <td>${escapeHtml(c.seller ?? "—")}${c.feedbackPercent ? ` (${escapeHtml(c.feedbackPercent)}%)` : ""}</td>
+        <td>${escapeHtml(c.condition ?? "—")}</td>
+        <td class="num">${fmt(c.price)}</td>
+        <td class="num">${c.shipping == null ? "—" : fmt(c.shipping)}</td>
+        <td class="num"><strong>${fmt(c.total)}</strong></td>
+      </tr>`).join("");
+    section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Confronta prezzi eBay";
+  }
+});
+
+document.getElementById("btnDetailReset").addEventListener("click", async () => {
+  if (!detailData) return;
+  if (!confirm("Reimpostare questo prodotto ai valori generati?")) return;
+  try {
+    const productId = detailData.productId;
+    await saveOverrides({ [productId]: null });
+    toast("Prodotto reimpostato ✔");
+    await reloadInventory();
+    openDetail(productId);
+  } catch (error) { toast(error.message, true); }
+});
+
+// --- pubblicati ---
+document.getElementById("btnSyncPublished").addEventListener("click", async () => {
+  const button = document.getElementById("btnSyncPublished");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Sincronizzazione…';
+  try {
+    const outcome = await api("/published/sync", { method: "POST" });
+    toast(`Storico sincronizzato: ${outcome.total} articoli pubblicati registrati ✔`);
+    if (inventory.length) await reloadInventory();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Sincronizza storico da eBay";
+  }
+});
+
+document.getElementById("btnLoadOffers").addEventListener("click", async () => {
+  const button = document.getElementById("btnLoadOffers");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Caricamento…';
+  try {
+    const data = await api("/offers");
+    const tbody = document.querySelector("#offersTable tbody");
+    tbody.innerHTML = data.offers.map((offer) => `
+      <tr>
+        <td>${escapeHtml(offer.sku)}</td>
+        <td>${escapeHtml(offer.title || "—")}</td>
+        <td><span class="tag ${offer.status === "PUBLISHED" ? "pub" : "unpub"}">${escapeHtml(offer.status)}</span></td>
+        <td class="num">${fmt(offer.priceEur)}</td>
+        <td class="num">${offer.quantity ?? "—"}</td>
+        <td>${offer.listingId ? `<a href="https://www.ebay.it/itm/${escapeHtml(offer.listingId)}" target="_blank">${escapeHtml(offer.listingId)}</a>` : "—"}</td>
+        <td>${offer.status === "PUBLISHED" ? `<button class="btn danger" style="margin:0;padding:5px 10px;font-size:12px" data-offer="${escapeHtml(offer.offerId)}" data-sku="${escapeHtml(offer.sku)}">Ritira</button>` : ""}</td>
+      </tr>`).join("");
+
+    tbody.querySelectorAll("button[data-offer]").forEach((withdrawButton) => {
+      withdrawButton.addEventListener("click", async () => {
+        if (!confirm("Ritirare questa inserzione da eBay?")) return;
+        try {
+          await api(`/offers/${withdrawButton.dataset.offer}/withdraw`, {
+            method: "POST",
+            body: JSON.stringify({ sku: withdrawButton.dataset.sku }),
+          });
+          toast("Inserzione ritirata ✔");
+          button.click();
+        } catch (error) { toast(error.message, true); }
+      });
+    });
+    toast(`${data.total} offerte caricate.`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Carica inserzioni";
+  }
+});
+
+refreshStatus();
+</script>
+</body>
+</html>

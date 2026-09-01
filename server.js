@@ -17,6 +17,8 @@ const { pruneExpiredArtifacts } = require("./services/excelConversionService");
 const cardtraderRoutes = require("./routes/cardtrader");
 const excelRoutes = require("./routes/excel");
 const taskRoutes = require("./routes/tasks");
+const ebayRoutes = require("./routes/ebay");
+const path = require("path");
 
 function getServerUrls(host, port) {
   const urls = new Set();
@@ -54,6 +56,11 @@ function createApp() {
     });
   });
 
+  // Interfaccia grafica per la pubblicazione dell'inventario su eBay.
+  app.get("/ebay", (_req, res) => {
+    res.sendFile(path.join(__dirname, "public", "ebay.html"));
+  });
+
   app.use("/api", originGate);
 
   app.get("/api/health", (_req, res) => {
@@ -72,6 +79,7 @@ function createApp() {
   });
 
   app.use("/api/cardtrader", cardtraderRoutes);
+  app.use("/api/ebay", ebayRoutes);
   app.use("/api/excel", excelRoutes);
   app.use("/api", taskRoutes);
 

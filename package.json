@@ -8,12 +8,16 @@
     "docs:generate": "node scripts/generateEndpointWeightsDoc.js",
     "docs:check": "node scripts/generateEndpointWeightsDoc.js --check",
     "inventory:excel": "node utils/generateInventoryWorkbook.js",
-    "stats": "node utils/stats.js"
+    "stats": "node utils/stats.js",
+    "track:cardmarket": "node scripts/trackPrices.js import-cardmarket",
+    "track:cardtrader": "node scripts/trackPrices.js sync-cardtrader",
+    "track:report": "node scripts/trackPrices.js report"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.5",
     "axios": "^1.8.1",
     "cloudconvert": "^3.0.0",
     "cors": "^2.8.5",

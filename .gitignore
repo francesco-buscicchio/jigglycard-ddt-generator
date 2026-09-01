@@ -6,4 +6,5 @@ node_modules
 .DS_Store
 processed_orders.txt
 service-account.json
+ebay_store.json
 .vercel

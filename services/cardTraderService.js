@@ -153,6 +153,24 @@ function createCardTraderService(runtimeConfig = {}) {
     return orders.filter((order) => order.state === "paid");
   }
 
+  async function fetchOrdersPage({ from, to, page = 1, limit = 100 } = {}) {
+    const params = { sort: "date.desc", page, limit };
+    if (from) params.from = from;
+    if (to) params.to = to;
+
+    const { data } = await throttledRequest(
+      {
+        method: "get",
+        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/orders`,
+        headers: buildHeaders(runtimeConfig),
+        params,
+      },
+      runtimeConfig,
+    );
+
+    return Array.isArray(data) ? data : [];
+  }
+
   async function fetchOrderDetails(orderId) {
     const { data } = await throttledRequest(
       {
@@ -283,6 +301,7 @@ function createCardTraderService(runtimeConfig = {}) {
 
   return {
     fetchOrders,
+    fetchOrdersPage,
     fetchOrderDetails,
     getExpansions,
     getBlueprintsByExpansionId,
