@@ -483,6 +483,103 @@ async function withdrawOffer(offerId) {
   );
 }
 
+// Vendite recenti (Trading API GetMyeBaySelling/SoldList): una riga per
+// transazione, con SKU e quantità acquistata. Non richiede lo scope
+// sell.fulfillment, basta il token utente già in uso.
+async function getRecentSales({ days = 3 } = {}) {
+  const token = await getAccessToken();
+  const sales = [];
+
+  for (let page = 1; page <= 20; page += 1) {
+    const xml =
+      `<?xml version="1.0" encoding="utf-8"?>` +
+      `<GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">` +
+      `<SoldList><Include>true</Include><DurationInDays>${days}</DurationInDays>` +
+      `<Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination>` +
+      `</SoldList></GetMyeBaySellingRequest>`;
+
+    const { data } = await axios.post(`${getEnvConfig().apiBaseUrl}/ws/api.dll`, xml, {
+      headers: {
+        "X-EBAY-API-CALL-NAME": "GetMyeBaySelling",
+        "X-EBAY-API-SITEID": "101",
+        "X-EBAY-API-COMPATIBILITY-LEVEL": "1193",
+        "X-EBAY-API-IAF-TOKEN": token,
+        "Content-Type": "text/xml",
+      },
+      timeout: 60000,
+    });
+
+    if (/<Ack>Failure<\/Ack>/.test(data)) {
+      const message = (data.match(/<LongMessage>([^<]+)/) || [])[1] ?? "errore sconosciuto";
+      throw new Error(`GetMyeBaySelling: ${message}`);
+    }
+
+    const soldList = (data.match(/<SoldList>([\s\S]*?)<\/SoldList>/) || [])[1] ?? "";
+    // Ogni OrderTransaction è un ordine multi-articolo (con OrderID) oppure
+    // una singola transazione: l'OrderID serve a contare gli ordini reali.
+    const transactions = [];
+    for (const orderBlock of soldList.split("<OrderTransaction>").slice(1)) {
+      const orderId = (orderBlock.match(/<Order>\s*<OrderID>([^<]+)/) || [])[1] ?? null;
+      for (const block of orderBlock.split("<Transaction>").slice(1)) {
+        transactions.push({ block, orderId });
+      }
+    }
+    for (const { block, orderId } of transactions) {
+      const pick = (tag) => (block.match(new RegExp(`<${tag}>([^<]*)</${tag}>`)) || [])[1] ?? null;
+      const priceMatch =
+        block.match(/<TransactionPrice[^>]*>([^<]+)</) ||
+        block.match(/<CurrentPrice[^>]*>([^<]+)</);
+      sales.push({
+        orderId: orderId ?? pick("OrderLineItemID"),
+        transactionId: pick("TransactionID"),
+        orderLineItemId: pick("OrderLineItemID"),
+        itemId: pick("ItemID"),
+        sku: pick("SKU"),
+        title: pick("Title"),
+        quantity: Number(pick("QuantityPurchased")) || 1,
+        priceEur: priceMatch ? Number(priceMatch[1]) : null,
+        soldAt: pick("CreatedDate") ?? pick("PaidTime") ?? null,
+        buyer: pick("UserID"),
+        paid: Boolean(pick("PaidTime")),
+        shipped: Boolean(pick("ShippedTime")),
+      });
+    }
+
+    const totalPages = Number((soldList.match(/<TotalNumberOfPages>(\d+)/) || [])[1]) || 1;
+    if (page >= totalPages) break;
+  }
+
+  return sales.filter((sale) => sale.orderLineItemId || sale.transactionId);
+}
+
+// Registro dei prodotti che la pubblicazione automatica non è riuscita a
+// pubblicare (foto troppo piccola, carta gradata…): evita di ritentarli a
+// ogni giro.
+function getAutoPublishFailures() {
+  return readStore().autoPublishFailures ?? {};
+}
+
+function saveAutoPublishFailures(failures) {
+  updateStore({ autoPublishFailures: failures });
+}
+
+// Registro delle vendite eBay già scalate su CardTrader (idempotenza).
+function getProcessedSales() {
+  return readStore().processedSales ?? null;
+}
+
+function saveProcessedSales(processed) {
+  updateStore({ processedSales: processed });
+}
+
+// Aggiorna prezzo e quantità di più SKU/offerte in una sola chiamata
+// (max 25 richieste per invocazione, limite eBay).
+async function bulkUpdatePriceQuantity(requests) {
+  return apiRequest("post", "/sell/inventory/v1/bulk_update_price_quantity", {
+    data: { requests },
+  });
+}
+
 async function getInventoryItems({ limit = 100, offset = 0 } = {}) {
   return apiRequest("get", "/sell/inventory/v1/inventory_item", {
     params: { limit, offset },
@@ -520,5 +617,11 @@ module.exports = {
   updateOffer,
   publishOffer,
   withdrawOffer,
+  bulkUpdatePriceQuantity,
+  getRecentSales,
+  getProcessedSales,
+  saveProcessedSales,
+  getAutoPublishFailures,
+  saveAutoPublishFailures,
   getInventoryItems,
 };

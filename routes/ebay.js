@@ -97,6 +97,12 @@ router.put("/settings", (req, res) => {
     "defaultImageUrl",
     "descriptionFooter",
     "markupPercent",
+    "cheapFulfillmentPolicyId",
+    "cheapShippingThresholdEur",
+    "rarityFloors",
+    "bestOffer",
+    "autoPublishSkip",
+    "priceUpdateThresholdPct",
   ];
 
   const patch = {};
@@ -266,11 +272,73 @@ router.post(
   }),
 );
 
+// --- Vendite eBay ---
+// Cache breve: la Trading API ha un limite giornaliero condiviso con lo scalo
+// automatico delle vendite su CardTrader.
+let salesCache = { key: null, at: 0, data: null };
+const SALES_CACHE_MS = 5 * 60 * 1000;
+
+router.get(
+  "/sales",
+  asyncHandler(async (req, res) => {
+    const days = Math.min(60, Math.max(1, Number(req.query.days) || 30));
+    const force = req.query.force === "true";
+    if (!force && salesCache.key === days && Date.now() - salesCache.at < SALES_CACHE_MS) {
+      return res.json({ ...salesCache.data, cached: true });
+    }
+
+    const sales = await ebayService.getRecentSales({ days });
+    const processed = ebayService.getProcessedSales() ?? {};
+    const rows = sales
+      .map((sale) => {
+        const key = sale.orderLineItemId || sale.transactionId;
+        const entry = processed[key];
+        return {
+          ...sale,
+          cardTraderStatus: !entry
+            ? "pending"
+            : entry.seeded
+              ? "manual"
+              : entry.skipped
+                ? "not-ct"
+                : "decremented",
+        };
+      })
+      .sort((a, b) => String(b.soldAt ?? "").localeCompare(String(a.soldAt ?? "")));
+
+    const totals = {
+      orders: new Set(rows.map((r) => r.orderId ?? r.transactionId)).size,
+      items: rows.reduce((t, r) => t + r.quantity, 0),
+      revenueEur: Number(rows.reduce((t, r) => t + (r.priceEur ?? 0) * r.quantity, 0).toFixed(2)),
+      pendingCardTrader: rows.filter((r) => r.cardTraderStatus === "pending").length,
+    };
+
+    const data = { days, totals, sales: rows, fetchedAt: new Date().toISOString() };
+    salesCache = { key: days, at: Date.now(), data };
+    res.json(data);
+  }),
+);
+
 // --- Storico pubblicazioni ---
 
 router.get("/published", (_req, res) => {
   res.json(ebayService.getPublishedHistory());
 });
+
+// Riallinea quantità/prezzi delle inserzioni pubblicate alla disponibilità
+// CardTrader corrente (stessa operazione eseguita dal cron EBAY_SYNC_*).
+router.post(
+  "/sync-quantities",
+  asyncHandler(async (req, res) => {
+    const sales = await ebaySyncService.syncSalesToCardTrader().catch((error) => ({
+      error: error.message,
+    }));
+    const outcome = await ebaySyncService.syncQuantities({
+      maxRepublishPerRun: Number(req.body?.maxRepublishPerRun) || undefined,
+    });
+    res.json({ ...outcome, sales });
+  }),
+);
 
 // Ricostruisce lo storico leggendo le offerte reali dall'account eBay.
 router.post(

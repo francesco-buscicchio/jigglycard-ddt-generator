@@ -1,11 +1,19 @@
 const fs = require("fs");
 const path = require("path");
 const {
-  ALIGN_PRICE_WORKERS,
   ALIGN_PRICE_INTER_GAME_DELAY_MS,
+  ALIGN_PRICE_EXPANSION_CONCURRENCY,
+  ALIGN_PRICE_LANGUAGE_FILTER,
+  ALIGN_PRICE_BULK_UPDATE,
+  ALIGN_PRICE_BULK_UPDATE_SIZE,
+  ALIGN_PRICE_JOB_WAIT_MS,
+  ALIGN_PRICE_TRACK_INVENTORY,
 } = require("../config/config");
 const { createCardTraderService } = require("./cardTraderService");
-const { sleep, throwIfAborted } = require("../utils/abort");
+const { syncCardTraderInventory } = require("./priceTrackingService");
+const { sleep, throwIfAborted, isAbortError } = require("../utils/abort");
+
+const ABORT_MESSAGE = "Allineamento prezzi annullato.";
 
 const BLOCKED_COUNTRIES = new Set(["US", "CA", "NZ"]);
 const MY_USERNAME = "Jigglycard";
@@ -25,18 +33,18 @@ const CONDITION_ORDER = [
 // condizione - 1 centesimo" e si sceglie il minore.
 // slightly played = Excellent, moderately played = Good.
 const CONDITION_PERCENT_RULES = {
-  "slightly played": { "near mint": 0.8 },
-  "moderately played": { "near mint": 0.6, "slightly played": 0.8 },
+  "slightly played": { "near mint": 0.85 },
+  "moderately played": { "near mint": 0.7, "slightly played": 0.85 },
   played: {
-    "near mint": 0.2,
-    "slightly played": 0.4,
-    "moderately played": 0.6,
+    "near mint": 0.4,
+    "slightly played": 0.55,
+    "moderately played": 0.7,
   },
   poor: {
-    "near mint": 0.1,
-    "slightly played": 0.3,
-    "moderately played": 0.5,
-    played: 0.9,
+    "near mint": 0.25,
+    "slightly played": 0.4,
+    "moderately played": 0.55,
+    played: 0.85,
   },
 };
 // Sopra questa soglia il nuovo prezzo non puo' superare il prezzo attuale
@@ -411,7 +419,90 @@ function getExpansionId(item) {
   return Number.isFinite(expansionId) ? expansionId : null;
 }
 
-async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
+// Tiene solo i campi usati dal confronto prezzi: una singola espansione puo'
+// restituire decine di migliaia di listing e il resto del payload e' peso morto.
+function leanListing(listing) {
+  return {
+    id: listing?.id,
+    price_cents: listing?.price_cents,
+    graded: listing?.graded,
+    properties_hash: listing?.properties_hash,
+    user: { username: listing?.user?.username },
+  };
+}
+
+function collectListingsByBlueprint(target, groupedListings, blueprintIds) {
+  const entries =
+    groupedListings && typeof groupedListings === "object"
+      ? Object.entries(groupedListings)
+      : [];
+
+  for (const [rawBlueprintId, listings] of entries) {
+    const blueprintId = Number(rawBlueprintId);
+    if (!Number.isFinite(blueprintId)) continue;
+    if (blueprintIds && !blueprintIds.has(blueprintId)) continue;
+
+    const kept = filterMarketplaceListings(
+      Array.isArray(listings) ? listings : [],
+    ).map(leanListing);
+    if (kept.length === 0) continue;
+
+    const existing = target.get(blueprintId);
+    if (existing) existing.push(...kept);
+    else target.set(blueprintId, kept);
+  }
+
+  return target;
+}
+
+// Registra nel tracking prezzi l'inventario appena esportato: gli articoli
+// nuovi entrano con il prezzo di carico corrente (l'export precede qualsiasi
+// aggiornamento di prezzo), anche se non sono stati venduti. Non deve mai
+// bloccare l'allineamento: se Mongo non risponde si logga e si prosegue.
+async function trackInventoryExport(
+  cardtraderService,
+  exportRes,
+  runtimeConfig = {},
+) {
+  if (!ALIGN_PRICE_TRACK_INVENTORY) return null;
+  const products = Array.isArray(exportRes?.data) ? exportRes.data : [];
+  if (products.length === 0) return null;
+
+  throwIfAborted(runtimeConfig.signal, ABORT_MESSAGE);
+  const startedAt = Date.now();
+  try {
+    const result = await syncCardTraderInventory(runtimeConfig, {
+      products,
+      cardTraderService,
+      source: "align-price",
+    });
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    console.log(
+      `[ALIGN-PRICE][tracking] Inventario registrato in ${seconds}s | articoli=${result.itemCount} | nuovi=${result.newItems} | collegati a Cardmarket=${result.linkedToCardmarket}`,
+    );
+    return result;
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    console.warn(
+      `[ALIGN-PRICE][tracking] Registrazione inventario saltata (${error.message})`,
+    );
+    return null;
+  }
+}
+
+// Scarica products/export e lo registra nel tracking prima di restituirlo.
+async function fetchInventoryExport(cardtraderService, runtimeConfig = {}) {
+  throwIfAborted(runtimeConfig.signal, ABORT_MESSAGE);
+  const exportRes = await cardtraderService.getMyProducts();
+  await trackInventoryExport(cardtraderService, exportRes, runtimeConfig);
+  return exportRes;
+}
+
+async function alignPricesForGame(
+  gameConfig,
+  runtimeConfig = {},
+  sharedExport = null,
+) {
   const cardtraderService = createCardTraderService(runtimeConfig);
   const taskSignal = runtimeConfig.signal;
   const exportStartedAt = Date.now();
@@ -419,14 +510,11 @@ async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
     `[ALIGN-PRICE][${gameConfig.slug}] Avvio allineamento per game_id=${gameConfig.gameId}`,
   );
 
-  throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
-  const exportRes = await cardtraderService.getMyProducts();
+  const exportRes =
+    sharedExport ??
+    (await fetchInventoryExport(cardtraderService, runtimeConfig));
   const myItems = Array.isArray(exportRes?.data)
-    ? exportRes.data.filter(
-        (item) => isEligibleItemForGame(item, gameConfig),
-        //&&
-        //  Number(item?.blueprint_id) === TEST_BLUEPRINT_ID,
-      )
+    ? exportRes.data.filter((item) => isEligibleItemForGame(item, gameConfig))
     : [];
   const exportDurationSeconds = Math.max(
     0,
@@ -434,97 +522,226 @@ async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
   );
   const totalItems = myItems.length;
   const rows = [];
-  const expansionMarketplaceCache = new Map();
-  const blueprintMarketplaceCache = new Map();
   let checkedItems = 0;
-  let nextIndex = 0;
   let processingStartedAt = null;
-  const uniqueExpansionCount = new Set(
-    myItems.map((item) => getExpansionId(item)).filter(Boolean),
-  ).size;
 
-  function getCachedMarketplaceByBlueprint(blueprintId) {
-    if (!blueprintMarketplaceCache.has(blueprintId)) {
-      blueprintMarketplaceCache.set(
-        blueprintId,
-        cardtraderService
-          .getProduct(blueprintId)
-          .then((product) => {
-            const listings = Array.isArray(product?.data?.[blueprintId])
-              ? product.data[blueprintId]
-              : [];
-
-            return filterMarketplaceListings(listings);
-          })
-          .catch((error) => {
-            blueprintMarketplaceCache.delete(blueprintId);
-            throw error;
-          }),
-      );
-    }
-
-    return blueprintMarketplaceCache.get(blueprintId);
-  }
-
-  function getCachedMarketplaceByExpansion(expansionId) {
-    if (!expansionMarketplaceCache.has(expansionId)) {
-      expansionMarketplaceCache.set(
-        expansionId,
-        cardtraderService
-          .getMarketplaceProductsByExpansionId(expansionId)
-          .then((product) => {
-            const byBlueprint = new Map();
-            const groupedListings =
-              product?.data && typeof product.data === "object"
-                ? product.data
-                : {};
-
-            for (const [rawBlueprintId, listings] of Object.entries(
-              groupedListings,
-            )) {
-              const blueprintId = Number(rawBlueprintId);
-              if (!Number.isFinite(blueprintId)) continue;
-              byBlueprint.set(
-                blueprintId,
-                filterMarketplaceListings(
-                  Array.isArray(listings) ? listings : [],
-                ),
-              );
-            }
-
-            return byBlueprint;
-          })
-          .catch((error) => {
-            console.warn(
-              `[ALIGN-PRICE][${gameConfig.slug}] Fallback fetch per blueprint: expansion_id=${expansionId} (${error.message})`,
-            );
-            return null;
-          }),
-      );
-    }
-
-    return expansionMarketplaceCache.get(expansionId);
-  }
-
-  async function getCachedMarketplace(item) {
-    const blueprintId = Number(item?.blueprint_id);
-    if (!Number.isFinite(blueprintId)) return [];
-
+  // Un gruppo per espansione: il marketplace si scarica una volta sola per
+  // espansione (e solo nelle lingue che teniamo davvero a magazzino), si
+  // processano tutti gli item del gruppo e poi la memoria viene liberata.
+  const groups = new Map();
+  const itemsWithoutExpansion = [];
+  for (const item of myItems) {
     const expansionId = getExpansionId(item);
-    if (expansionId !== null) {
-      const expansionMarketplace = await getCachedMarketplaceByExpansion(
+    if (expansionId === null) {
+      itemsWithoutExpansion.push(item);
+      continue;
+    }
+
+    let group = groups.get(expansionId);
+    if (!group) {
+      group = {
         expansionId,
-      );
-      if (expansionMarketplace instanceof Map) {
-        return expansionMarketplace.get(blueprintId) ?? [];
+        items: [],
+        languages: new Set(),
+        blueprintIds: new Set(),
+      };
+      groups.set(expansionId, group);
+    }
+
+    group.items.push(item);
+    const language = getItemLanguage(item, gameConfig);
+    if (language) group.languages.add(language);
+    const blueprintId = Number(item?.blueprint_id);
+    if (Number.isFinite(blueprintId)) group.blueprintIds.add(blueprintId);
+  }
+  const groupList = [...groups.values()];
+
+  const bulkSize = Math.max(1, ALIGN_PRICE_BULK_UPDATE_SIZE);
+  const pendingPriceUpdates = [];
+  const bulkJobs = [];
+  let queuedUpdates = 0;
+
+  function queuePriceUpdate(productId, priceCents) {
+    const id = Number(productId);
+    if (!Number.isFinite(id)) return;
+    pendingPriceUpdates.push({ id, price: priceCents / 100 });
+    queuedUpdates += 1;
+  }
+
+  // POST /products/bulk_update accorpa fino a bulkSize prodotti in una sola
+  // richiesta asincrona, al posto di una PUT per prodotto.
+  async function flushPriceUpdates(force = false) {
+    while (
+      pendingPriceUpdates.length >= bulkSize ||
+      (force && pendingPriceUpdates.length > 0)
+    ) {
+      const batch = pendingPriceUpdates.splice(0, bulkSize);
+      throwIfAborted(taskSignal, ABORT_MESSAGE);
+
+      if (!ALIGN_PRICE_BULK_UPDATE) {
+        for (const update of batch) {
+          try {
+            await cardtraderService.updateProductPrice(
+              update.id,
+              Math.round(update.price * 100),
+            );
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+          }
+        }
+        continue;
+      }
+
+      try {
+        const response = await cardtraderService.bulkUpdateProducts(batch);
+        const jobUuid = response?.data?.job;
+        if (jobUuid) bulkJobs.push(jobUuid);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        console.warn(
+          `[ALIGN-PRICE][${gameConfig.slug}] bulk_update fallito per ${batch.length} prodotti (${error.message})`,
+        );
+      }
+    }
+  }
+
+  async function waitForBulkJobs() {
+    const totals = { ok: 0, warning: 0, error: 0, pending: 0 };
+    if (bulkJobs.length === 0) return totals;
+
+    const deadline = Date.now() + Math.max(0, ALIGN_PRICE_JOB_WAIT_MS);
+    for (const uuid of bulkJobs) {
+      while (true) {
+        throwIfAborted(taskSignal, ABORT_MESSAGE);
+        if (Date.now() > deadline) {
+          totals.pending += 1;
+          break;
+        }
+
+        let jobData = null;
+        try {
+          const response = await cardtraderService.getJob(uuid);
+          jobData = response?.data ?? null;
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          totals.pending += 1;
+          break;
+        }
+
+        const state = jobData?.state;
+        if (state === "completed" || state === "unprocessable") {
+          totals.ok += Number(jobData?.stats?.ok) || 0;
+          totals.warning += Number(jobData?.stats?.warning) || 0;
+          totals.error += Number(jobData?.stats?.error) || 0;
+          break;
+        }
+
+        await sleep(250, taskSignal);
       }
     }
 
-    return getCachedMarketplaceByBlueprint(blueprintId);
+    return totals;
   }
 
-  async function processItem(item) {
-    throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
+  async function fetchGroupListingsByBlueprint(group) {
+    const byBlueprint = new Map();
+    for (const blueprintId of group.blueprintIds) {
+      throwIfAborted(taskSignal, ABORT_MESSAGE);
+      try {
+        const response = await cardtraderService.getProduct(blueprintId);
+        collectListingsByBlueprint(
+          byBlueprint,
+          response?.data,
+          group.blueprintIds,
+        );
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+      }
+    }
+    return byBlueprint;
+  }
+
+  async function fetchGroupListings(group) {
+    const languages = ALIGN_PRICE_LANGUAGE_FILTER
+      ? [...group.languages].filter(Boolean)
+      : [];
+    // Senza lingue note si scarica l'espansione intera, come prima.
+    const variants = languages.length > 0 ? languages : [null];
+
+    try {
+      const responses = await Promise.all(
+        variants.map((language) =>
+          cardtraderService.getMarketplaceProductsByExpansionId(
+            group.expansionId,
+            { language },
+          ),
+        ),
+      );
+
+      const byBlueprint = new Map();
+      for (const response of responses) {
+        collectListingsByBlueprint(
+          byBlueprint,
+          response?.data,
+          group.blueprintIds,
+        );
+      }
+      return byBlueprint;
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      console.warn(
+        `[ALIGN-PRICE][${gameConfig.slug}] Fallback fetch per blueprint: expansion_id=${group.expansionId} (${error.message})`,
+      );
+      return fetchGroupListingsByBlueprint(group);
+    }
+  }
+
+  // Le espansioni successive vengono precaricate mentre si elabora quella
+  // corrente: e' il vero collo di bottiglia, perche' ogni chiamata marketplace
+  // puo' durare diversi secondi e prima veniva attesa in serie.
+  const expansionConcurrency = Math.max(1, ALIGN_PRICE_EXPANSION_CONCURRENCY);
+  const inflightGroups = new Map();
+
+  function ensureGroupFetch(group) {
+    let pending = inflightGroups.get(group.expansionId);
+    if (!pending) {
+      pending = fetchGroupListings(group).then(
+        (listings) => ({ listings }),
+        (error) => ({ error }),
+      );
+      inflightGroups.set(group.expansionId, pending);
+    }
+    return pending;
+  }
+
+  function reportProgress() {
+    checkedItems += 1;
+    if (checkedItems % 50 !== 0 && checkedItems !== totalItems) return;
+
+    const startedAt = processingStartedAt ?? Date.now();
+    const elapsedSeconds = Math.max(
+      1,
+      Math.round((Date.now() - startedAt) / 1000),
+    );
+    const itemsPerSecond = checkedItems / elapsedSeconds;
+    const remainingItems = Math.max(0, totalItems - checkedItems);
+    const etaSeconds =
+      itemsPerSecond > 0 ? Math.round(remainingItems / itemsPerSecond) : null;
+    const rateText = itemsPerSecond.toFixed(2).replace(".", ",");
+    const etaText =
+      etaSeconds === null
+        ? "n/a"
+        : `${Math.floor(etaSeconds / 60)}m ${String(etaSeconds % 60).padStart(
+            2,
+            "0",
+          )}s`;
+
+    console.log(
+      `[ALIGN-PRICE][${gameConfig.slug}] ${checkedItems}/${totalItems} prezzi controllati | speed: ${rateText} item/s | eta: ${etaText}`,
+    );
+  }
+
+  function processItem(item, cachedListings) {
     const blueprintId = item?.blueprint_id;
     if (!blueprintId) return;
 
@@ -532,8 +749,6 @@ async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
     const myNetCents = Number.isFinite(myPriceCents) ? myPriceCents : null;
 
     try {
-      const cachedListings = await getCachedMarketplace(item);
-      throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
       const listings = filterListingsForItem(
         item,
         cachedListings,
@@ -627,63 +842,79 @@ async function alignPricesForGame(gameConfig, runtimeConfig = {}) {
         typeof targetNetCents === "number" &&
         targetNetCents !== myPriceCents
       ) {
-        try {
-          await cardtraderService.updateProductPrice(item.id, targetNetCents);
-        } catch (_err) {
-          // Ignora errori di update per non bloccare il CSV.
-        }
+        queuePriceUpdate(item.id, targetNetCents);
       }
     } catch (_err) {
       // Ignora errori per produrre solo il CSV finale.
     }
   }
 
-  async function worker() {
-    while (true) {
-      const currentIndex = nextIndex;
-      if (currentIndex >= totalItems) return;
-      nextIndex += 1;
-      throwIfAborted(taskSignal, "Allineamento prezzi annullato.");
-
-      await processItem(myItems[currentIndex]);
-
-      checkedItems += 1;
-      if (checkedItems % 50 === 0 || checkedItems === totalItems) {
-        const startedAt = processingStartedAt ?? Date.now();
-        const elapsedSeconds = Math.max(
-          1,
-          Math.round((Date.now() - startedAt) / 1000),
-        );
-        const itemsPerSecond = checkedItems / elapsedSeconds;
-        const remainingItems = Math.max(0, totalItems - checkedItems);
-        const etaSeconds =
-          itemsPerSecond > 0
-            ? Math.round(remainingItems / itemsPerSecond)
-            : null;
-        const rateText = itemsPerSecond.toFixed(2).replace(".", ",");
-        const etaText =
-          etaSeconds === null
-            ? "n/a"
-            : `${Math.floor(etaSeconds / 60)}m ${String(
-                etaSeconds % 60,
-              ).padStart(2, "0")}s`;
-
-        console.log(
-          `[ALIGN-PRICE][${gameConfig.slug}] ${checkedItems}/${totalItems} prezzi controllati | speed: ${rateText} item/s | eta: ${etaText}`,
-        );
-      }
+  function processGroupItems(group, listingsByBlueprint) {
+    for (const item of group.items) {
+      const blueprintId = Number(item?.blueprint_id);
+      processItem(item, listingsByBlueprint.get(blueprintId) ?? []);
+      reportProgress();
     }
   }
 
-  const workerCount = Math.max(
-    1,
-    Math.min(ALIGN_PRICE_WORKERS, totalItems || 1),
-  );
   processingStartedAt = Date.now();
   console.log(
-    `[ALIGN-PRICE][${gameConfig.slug}] Export completato in ${exportDurationSeconds}s | items=${totalItems} | expansions=${uniqueExpansionCount} | workers=${workerCount}`,
+    `[ALIGN-PRICE][${gameConfig.slug}] Export completato in ${exportDurationSeconds}s | items=${totalItems} | expansions=${groupList.length} | prefetch=${expansionConcurrency} | lingue=${
+      ALIGN_PRICE_LANGUAGE_FILTER ? "filtrate" : "tutte"
+    }`,
   );
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  for (let index = 0; index < groupList.length; index += 1) {
+    throwIfAborted(taskSignal, ABORT_MESSAGE);
+
+    const windowEnd = Math.min(groupList.length, index + expansionConcurrency);
+    for (let ahead = index; ahead < windowEnd; ahead += 1) {
+      ensureGroupFetch(groupList[ahead]);
+    }
+
+    const group = groupList[index];
+    const { listings, error } = await ensureGroupFetch(group);
+    inflightGroups.delete(group.expansionId);
+
+    if (error) {
+      if (isAbortError(error)) throw error;
+      checkedItems += group.items.length;
+      continue;
+    }
+
+    processGroupItems(group, listings);
+    await flushPriceUpdates(false);
+  }
+
+  for (const item of itemsWithoutExpansion) {
+    throwIfAborted(taskSignal, ABORT_MESSAGE);
+    const blueprintId = Number(item?.blueprint_id);
+    if (!Number.isFinite(blueprintId)) {
+      reportProgress();
+      continue;
+    }
+
+    try {
+      const response = await cardtraderService.getProduct(blueprintId);
+      const byBlueprint = collectListingsByBlueprint(
+        new Map(),
+        response?.data,
+        null,
+      );
+      processItem(item, byBlueprint.get(blueprintId) ?? []);
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+    }
+    reportProgress();
+  }
+
+  await flushPriceUpdates(true);
+  const jobTotals = await waitForBulkJobs();
+  if (queuedUpdates > 0) {
+    console.log(
+      `[ALIGN-PRICE][${gameConfig.slug}] Prezzi aggiornati: ${queuedUpdates} | job=${bulkJobs.length} | ok=${jobTotals.ok} warning=${jobTotals.warning} error=${jobTotals.error} in-corso=${jobTotals.pending}`,
+    );
+  }
 
   const headers = [
     "blueprint_id",
@@ -733,15 +964,37 @@ exports.alignOnePiecePrices = async (runtimeConfig = {}) =>
   alignPricesForGame(GAME_CONFIGS.onepiece, runtimeConfig);
 
 exports.alignPrices = async (runtimeConfig = {}) => {
+  // products/export restituisce l'intero inventario (tutti i giochi) e su
+  // collezioni grandi costa parecchi secondi: lo scarichiamo una volta sola.
+  const cardtraderService = createCardTraderService(runtimeConfig);
+  const sharedExport = await fetchInventoryExport(
+    cardtraderService,
+    runtimeConfig,
+  );
+
   const results = [];
-  results.push(await exports.alignPokemonPrices(runtimeConfig));
+  results.push(
+    await alignPricesForGame(GAME_CONFIGS.pokemon, runtimeConfig, sharedExport),
+  );
   if (ALIGN_PRICE_INTER_GAME_DELAY_MS > 0) {
     await sleep(ALIGN_PRICE_INTER_GAME_DELAY_MS, runtimeConfig.signal);
   }
-  results.push(await exports.alignDragonBallPrices(runtimeConfig));
+  results.push(
+    await alignPricesForGame(
+      GAME_CONFIGS.dragonball,
+      runtimeConfig,
+      sharedExport,
+    ),
+  );
   if (ALIGN_PRICE_INTER_GAME_DELAY_MS > 0) {
     await sleep(ALIGN_PRICE_INTER_GAME_DELAY_MS, runtimeConfig.signal);
   }
-  results.push(await exports.alignOnePiecePrices(runtimeConfig));
+  results.push(
+    await alignPricesForGame(
+      GAME_CONFIGS.onepiece,
+      runtimeConfig,
+      sharedExport,
+    ),
+  );
   return results;
 };

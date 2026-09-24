@@ -2,6 +2,8 @@ const axios = require("axios");
 const { formatDate } = require("../utils/dateUtils");
 const {
   CARDTRADER_REQUEST_TIMEOUT_MS,
+  CARDTRADER_EXPORT_TIMEOUT_MS,
+  CARDTRADER_MARKETPLACE_TIMEOUT_MS,
   CARDTRADER_MAX_RETRIES,
   CARDTRADER_RETRY_BASE_DELAY_MS,
 } = require("../config/config");
@@ -93,9 +95,11 @@ async function throttledRequest(config, runtimeConfig = {}) {
   const retryBaseDelayMs = resolveRetryBaseDelayMs(runtimeConfig);
   const timeout = resolveRequestTimeoutMs(runtimeConfig);
 
+  const scope = runtimeConfig.scope ?? null;
+
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     throwIfAborted(signal, "Richiesta CardTrader annullata.");
-    await cardTraderRateLimiter.waitTurn({ signal });
+    await cardTraderRateLimiter.waitTurn({ signal, scope });
 
     try {
       return await axios({
@@ -106,7 +110,7 @@ async function throttledRequest(config, runtimeConfig = {}) {
     } catch (error) {
       const retryAfterMs = extractRetryAfterMs(error);
       if (Number(error?.response?.status) === 429) {
-        cardTraderRateLimiter.markRateLimited(retryAfterMs);
+        cardTraderRateLimiter.markRateLimited(retryAfterMs, scope);
       }
 
       if (attempt >= maxRetries || !isRetryableError(error)) {
@@ -124,6 +128,16 @@ async function throttledRequest(config, runtimeConfig = {}) {
 }
 
 function createCardTraderService(runtimeConfig = {}) {
+  // Limiti e timeout specifici per endpoint: marketplace/products e' limitato a
+  // 10 req/s e puo' restituire decine di MB, products/export fino a 180s.
+  function endpointConfig(scope, defaultTimeoutMs) {
+    return {
+      ...runtimeConfig,
+      scope,
+      requestTimeoutMs: runtimeConfig.requestTimeoutMs ?? defaultTimeoutMs,
+    };
+  }
+
   async function fetchOrders() {
     let orders = [];
     let page = 1;
@@ -205,36 +219,48 @@ function createCardTraderService(runtimeConfig = {}) {
     );
   }
 
-  async function getMyProducts() {
+  async function getMyProducts(params = {}) {
     return throttledRequest(
       {
         method: "get",
         url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/products/export`,
         headers: buildHeaders(runtimeConfig),
+        params,
       },
-      runtimeConfig,
+      endpointConfig("export", CARDTRADER_EXPORT_TIMEOUT_MS),
     );
   }
 
-  async function getProduct(blueprintId) {
+  async function getProduct(blueprintId, { language = null } = {}) {
+    const params = { blueprint_id: blueprintId };
+    if (language) params.language = language;
+
     return throttledRequest(
       {
         method: "get",
-        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/marketplace/products?blueprint_id=${blueprintId}`,
+        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/marketplace/products`,
         headers: buildHeaders(runtimeConfig),
+        params,
       },
-      runtimeConfig,
+      endpointConfig("marketplace", CARDTRADER_MARKETPLACE_TIMEOUT_MS),
     );
   }
 
-  async function getMarketplaceProductsByExpansionId(expansionId) {
+  async function getMarketplaceProductsByExpansionId(
+    expansionId,
+    { language = null } = {},
+  ) {
+    const params = { expansion_id: expansionId };
+    if (language) params.language = language;
+
     return throttledRequest(
       {
         method: "get",
-        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/marketplace/products?expansion_id=${expansionId}`,
+        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/marketplace/products`,
         headers: buildHeaders(runtimeConfig),
+        params,
       },
-      runtimeConfig,
+      endpointConfig("marketplace", CARDTRADER_MARKETPLACE_TIMEOUT_MS),
     );
   }
 
@@ -245,6 +271,44 @@ function createCardTraderService(runtimeConfig = {}) {
         url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/products/${productId}`,
         headers: buildHeaders(runtimeConfig),
         data: { price: priceCents / 100 },
+      },
+      runtimeConfig,
+    );
+  }
+
+  // POST /products/bulk_update: aggiorna N prodotti con una sola richiesta e
+  // restituisce lo uuid di un job asincrono da seguire con getJob().
+  async function bulkUpdateProducts(products) {
+    return throttledRequest(
+      {
+        method: "post",
+        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/products/bulk_update`,
+        headers: buildHeaders(runtimeConfig),
+        data: { products },
+      },
+      runtimeConfig,
+    );
+  }
+
+  async function getJob(uuid) {
+    return throttledRequest(
+      {
+        method: "get",
+        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/jobs/${uuid}`,
+        headers: buildHeaders(runtimeConfig),
+      },
+      endpointConfig("jobs", CARDTRADER_REQUEST_TIMEOUT_MS),
+    );
+  }
+
+  // Variazione relativa della quantità (es. -1 dopo una vendita altrove).
+  async function incrementProductQuantity(productId, deltaQuantity) {
+    return throttledRequest(
+      {
+        method: "post",
+        url: `${resolveCardTraderApiBaseUrl(runtimeConfig)}/products/${productId}/increment`,
+        headers: buildHeaders(runtimeConfig),
+        data: { delta_quantity: deltaQuantity },
       },
       runtimeConfig,
     );
@@ -309,6 +373,9 @@ function createCardTraderService(runtimeConfig = {}) {
     getProduct,
     getMarketplaceProductsByExpansionId,
     updateProductPrice,
+    bulkUpdateProducts,
+    getJob,
+    incrementProductQuantity,
     getCategories,
     getCart,
     addProductToCart,

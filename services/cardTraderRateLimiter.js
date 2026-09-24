@@ -2,6 +2,7 @@ const {
   CARDTRADER_RATE_LIMIT_WINDOW_MS,
   CARDTRADER_RATE_LIMIT_MAX_REQUESTS,
   CARDTRADER_RATE_LIMIT_COOLDOWN_MS,
+  CARDTRADER_SCOPE_RATE_LIMITS,
 } = require("../config/config");
 const { sleep, throwIfAborted } = require("../utils/abort");
 
@@ -10,6 +11,7 @@ class CardTraderRateLimiter {
     windowMs = CARDTRADER_RATE_LIMIT_WINDOW_MS,
     maxRequests = CARDTRADER_RATE_LIMIT_MAX_REQUESTS,
     cooldownMs = CARDTRADER_RATE_LIMIT_COOLDOWN_MS,
+    scopes = null,
   } = {}) {
     this.windowMs = Math.max(1, Number(windowMs) || 1);
     this.maxRequests = Math.max(1, Number(maxRequests) || 1);
@@ -22,6 +24,18 @@ class CardTraderRateLimiter {
     this.blockedUntil = 0;
     this.nextScheduledAt = 0;
     this.smoothingEnabledUntil = 0;
+    // Limiti per endpoint (es. marketplace/products: 10 req/s, jobs: 1 req/s):
+    // sforarli costa un 429 e quindi un cooldown molto piu' caro della coda.
+    this.scopeLimiters = new Map();
+    for (const [scope, options] of Object.entries(scopes ?? {})) {
+      if (!options) continue;
+      this.scopeLimiters.set(scope, new CardTraderRateLimiter(options));
+    }
+  }
+
+  getScopeLimiter(scope) {
+    if (!scope) return null;
+    return this.scopeLimiters.get(scope) ?? null;
   }
 
   prune(now = Date.now()) {
@@ -109,7 +123,10 @@ class CardTraderRateLimiter {
     };
   }
 
-  markRateLimited(retryAfterMs = 0) {
+  markRateLimited(retryAfterMs = 0, scope = null) {
+    const scopeLimiter = this.getScopeLimiter(scope);
+    if (scopeLimiter) scopeLimiter.markRateLimited(retryAfterMs);
+
     const now = Date.now();
     const safeRetryAfterMs = Math.max(this.cooldownMs, Number(retryAfterMs) || 0);
     this.blockedUntil = Math.max(this.blockedUntil, now + safeRetryAfterMs);
@@ -124,9 +141,16 @@ class CardTraderRateLimiter {
     this.blockedUntil = 0;
     this.nextScheduledAt = 0;
     this.smoothingEnabledUntil = 0;
+    for (const scopeLimiter of this.scopeLimiters.values()) {
+      scopeLimiter.reset();
+    }
   }
 
-  async waitTurn({ signal } = {}) {
+  async waitTurn({ signal, scope } = {}) {
+    // Prima il bucket piu' stretto (per endpoint), poi quello globale.
+    const scopeLimiter = this.getScopeLimiter(scope);
+    if (scopeLimiter) await scopeLimiter.waitTurn({ signal });
+
     while (true) {
       throwIfAborted(signal, "Richiesta CardTrader annullata.");
       const now = Date.now();
@@ -151,7 +175,9 @@ class CardTraderRateLimiter {
   }
 }
 
-const sharedLimiter = new CardTraderRateLimiter();
+const sharedLimiter = new CardTraderRateLimiter({
+  scopes: CARDTRADER_SCOPE_RATE_LIMITS,
+});
 
 module.exports = sharedLimiter;
 module.exports.CardTraderRateLimiter = CardTraderRateLimiter;

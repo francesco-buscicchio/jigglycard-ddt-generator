@@ -13,16 +13,23 @@ const SKU_PREFIX = "CT-";
 const DEFAULT_CATEGORY_ID = "183454"; // CCG - Carte singole
 const TITLE_MAX_LENGTH = 80;
 
-// Mappa condizioni CardTrader -> condizioni eBay (Inventory API).
-// Per le carte da gioco eBay usa in genere 4000 (= USED_VERY_GOOD, "Ungraded").
-const CONDITION_MAP = {
-  mint: "USED_VERY_GOOD",
-  "near mint": "USED_VERY_GOOD",
-  "slightly played": "USED_VERY_GOOD",
-  "moderately played": "USED_GOOD",
-  played: "USED_GOOD",
-  "heavily played": "USED_ACCEPTABLE",
-  poor: "USED_ACCEPTABLE",
+// Condizioni per le carte singole (categoria 183454): eBay accetta solo
+// 4000 = USED_VERY_GOOD ("Non gradata") oppure 2750 ("Gradata"), e per le non
+// gradate richiede il condition descriptor 40001 "Condizione della carta".
+// Mappa condizione CardTrader -> valore del descrittore eBay.
+const UNGRADED_CONDITION = "USED_VERY_GOOD";
+const CARD_CONDITION_DESCRIPTOR_ID = "40001";
+// Valori validi per EBAY_IT (da get_item_condition_policies):
+// 400010 Near Mint or Better, 400015 Lightly Played (Excellent),
+// 400016 Moderately Played (Very Good), 400017 Heavily Played (Poor).
+const CONDITION_DESCRIPTOR_MAP = {
+  mint: "400010",
+  "near mint": "400010",
+  "slightly played": "400015",
+  "moderately played": "400016",
+  played: "400017",
+  "heavily played": "400017",
+  poor: "400017",
 };
 
 const LANGUAGE_LABELS = {
@@ -102,8 +109,12 @@ function getProductCondition(propertiesHash = {}) {
 
 function mapCondition(cardTraderCondition, settings = {}) {
   if (settings.conditionOverride) return settings.conditionOverride;
+  return UNGRADED_CONDITION;
+}
+
+function mapConditionDescriptor(cardTraderCondition) {
   const key = String(cardTraderCondition || "").toLowerCase();
-  return CONDITION_MAP[key] ?? "USED_VERY_GOOD";
+  return CONDITION_DESCRIPTOR_MAP[key] ?? "400010";
 }
 
 function buildSku(product) {
@@ -116,6 +127,23 @@ function parseProductIdFromSku(sku) {
   return Number.isFinite(id) ? id : null;
 }
 
+// Varianti che distinguono lotti della stessa carta (reverse holo, foil,
+// prima edizione…): vanno nel titolo, sia per informare l'acquirente sia
+// perché eBay rifiuta due inserzioni con titolo identico (anti-duplicati).
+function getVariantTokens(propertiesHash = {}) {
+  const tokens = [];
+  for (const [key, value] of Object.entries(propertiesHash)) {
+    if (value !== true && value !== "true") continue;
+    const bare = key.toLowerCase();
+    if (bare.endsWith("reverse")) tokens.push("Reverse Holo");
+    else if (bare === "foil" || bare.endsWith("_foil")) tokens.push("Foil");
+    else if (bare.endsWith("first_edition")) tokens.push("1a Edizione");
+    else if (bare === "signed") tokens.push("Firmata");
+    else if (bare === "altered") tokens.push("Alterata");
+  }
+  return tokens;
+}
+
 function buildGeneratedTitle(product) {
   const name = product.name_en ?? product.name ?? `Prodotto ${product.id}`;
   const expansion =
@@ -126,7 +154,7 @@ function buildGeneratedTitle(product) {
     ? (LANGUAGE_LABELS[language] ?? language.toUpperCase())
     : null;
 
-  const parts = [name];
+  const parts = [name, ...getVariantTokens(product.properties_hash)];
   if (expansion) parts.push(expansion);
   if (condition) parts.push(condition);
   if (languageLabel) parts.push(languageLabel);
@@ -250,7 +278,35 @@ async function resolveImageUrl(product, settings, override, cardTraderService) {
   );
 }
 
+// eBay.it rifiuta le inserzioni a prezzo fisso sotto 1 EUR (errore 25016).
+const EBAY_MIN_PRICE_EUR = 1;
+
+// Prezzo minimo per rarità (sovrascrivibile da settings.rarityFloors). È un
+// MINIMO: se CT + ricarico è più alto vale quello, così le carte di valore
+// non vengono mai svendute.
+const DEFAULT_RARITY_FLOORS = {
+  common: 1,
+  uncommon: 1.2,
+  rare: 1,
+  fixed: 1,
+};
+
+function getRarityFloor(product, options = {}) {
+  const rarity = String(getProductRarity(product.properties_hash) ?? "").toLowerCase();
+  const floors = options.rarityFloors ?? DEFAULT_RARITY_FLOORS;
+  const floor = Number(floors[rarity]);
+  return Number.isFinite(floor) && floor > 0 ? floor : null;
+}
+
 function computePriceValue(product, options = {}, override = {}) {
+  const price = computeRawPriceValue(product, options, override);
+  if (price == null) return null;
+  const hasFixedPrice = Number.isFinite(Number(override.price)) && Number(override.price) > 0;
+  const rarityFloor = hasFixedPrice ? null : getRarityFloor(product, options);
+  return Math.max(price, rarityFloor ?? 0, EBAY_MIN_PRICE_EUR);
+}
+
+function computeRawPriceValue(product, options = {}, override = {}) {
   if (Number.isFinite(Number(override.price)) && Number(override.price) > 0) {
     return Number(Number(override.price).toFixed(2));
   }
@@ -277,12 +333,59 @@ function computeQuantity(product, override = {}) {
   return available;
 }
 
+// Gioco (item specific obbligatorio su eBay.it, categoria 183454) dedotto dal
+// prefisso delle proprietà CardTrader; i valori sono quelli suggeriti dalla
+// Taxonomy API di eBay.
+const GAME_ASPECT_BY_PREFIX = {
+  pokemon: "Pokémon",
+  mtg: "Magic: The Gathering",
+  yugioh: "Yu-Gi-Oh!",
+  ygo: "Yu-Gi-Oh!",
+  dragonball: "Dragon Ball Super Card Game",
+  onepiece: "GCC One Piece",
+  ff: "Final Fantasy TCG",
+  digimon: "GCC Digimon",
+  lorcana: "Disney Lorcana TCG",
+  vanguard: "Cardfight!! Vanguard TCG",
+  ws: "Weiss Schwarz",
+  swu: "GCC Star Wars",
+  gundam: "Gundam War TCG",
+  fab: "Flesh and Blood TCG",
+};
+
+function detectGameAspect(propertiesHash = {}) {
+  for (const key of Object.keys(propertiesHash)) {
+    const prefix = key.toLowerCase().split("_")[0];
+    if (GAME_ASPECT_BY_PREFIX[prefix]) return GAME_ASPECT_BY_PREFIX[prefix];
+  }
+  return null;
+}
+
+function getProductRarity(propertiesHash = {}) {
+  const key = Object.keys(propertiesHash).find((k) =>
+    k.toLowerCase().endsWith("rarity"),
+  );
+  return key ? String(propertiesHash[key]) : null;
+}
+
+function getCollectorNumber(propertiesHash = {}) {
+  const key = Object.keys(propertiesHash).find((k) =>
+    k.toLowerCase().includes("collector_number"),
+  );
+  return key ? String(propertiesHash[key]) : null;
+}
+
+// Item specifics con i nomi localizzati richiesti/raccomandati da eBay.it.
 function buildAspects(product, settings = {}) {
+  const props = product.properties_hash ?? {};
   const aspects = { ...(settings.defaultAspects ?? {}) };
 
-  const language = getProductLanguage(product.properties_hash);
+  const game = detectGameAspect(props) ?? settings.defaultGameAspect ?? null;
+  if (game) aspects["Gioco"] = [game];
+
+  const language = getProductLanguage(props);
   if (language) {
-    aspects.Language = [LANGUAGE_LABELS[language] ?? language.toUpperCase()];
+    aspects["Lingua"] = [LANGUAGE_LABELS[language] ?? language.toUpperCase()];
   }
 
   const expansion =
@@ -293,10 +396,20 @@ function buildAspects(product, settings = {}) {
 
   const name = product.name_en ?? product.name;
   if (name) {
-    aspects["Card Name"] = [String(name).slice(0, 65)];
+    aspects["Nome della carta"] = [String(name).slice(0, 65)];
   }
 
-  aspects.Graded = [product.graded ? "Yes" : "No"];
+  const rarity = getProductRarity(props);
+  if (rarity) aspects["Rarità"] = [String(rarity).slice(0, 65)];
+
+  const collectorNumber = getCollectorNumber(props);
+  if (collectorNumber) {
+    aspects["Numero della carta"] = [collectorNumber.slice(0, 65)];
+  }
+
+  const variantTokens = getVariantTokens(props);
+  if (variantTokens.includes("Reverse Holo")) aspects["Finitura"] = ["Reverse Holo"];
+  else if (variantTokens.includes("Foil")) aspects["Finitura"] = ["Holo"];
 
   return aspects;
 }
@@ -340,7 +453,86 @@ function withDefaultMarkup(options, settings) {
     markupPercent: Number.isFinite(provided) && options.markupPercent != null
       ? provided
       : Number(settings.markupPercent) || 0,
+    rarityFloors: options.rarityFloors ?? settings.rarityFloors ?? DEFAULT_RARITY_FLOORS,
   };
+}
+
+// Le carte sotto la soglia (default 2 EUR) usano la policy "economica", che
+// aggiunge la spedizione non tracciata; le altre solo spedizione tracciata.
+const DEFAULT_CHEAP_SHIPPING_THRESHOLD_EUR = 2;
+// Cambi di policy per giro di sincronizzazione (ognuno riscrive un'offerta).
+const POLICY_SWITCH_MAX_PER_RUN = 200;
+const POLICY_SWITCH_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+const REPUBLISH_CONCURRENCY = 4;
+
+function selectFulfillmentPolicyId(priceEur, settings) {
+  const threshold = Number(settings.cheapShippingThresholdEur) || DEFAULT_CHEAP_SHIPPING_THRESHOLD_EUR;
+  if (settings.cheapFulfillmentPolicyId && Number(priceEur) < threshold) {
+    return settings.cheapFulfillmentPolicyId;
+  }
+  return settings.fulfillmentPolicyId;
+}
+
+// Il prezzo eBay segue CardTrader solo quando il prezzo CT si è spostato di
+// oltre la soglia (default 2%) rispetto alla base registrata all'ultimo
+// caricamento/aggiornamento: evita un aggiornamento al giorno per i piccoli
+// ribassi CT. I prezzi fissi (override) si applicano sempre subito.
+const DEFAULT_PRICE_UPDATE_THRESHOLD_PCT = 2;
+
+function resolveSyncPrice(entry, product, override, options, settings) {
+  if (!product) return { priceEur: entry.priceEur ?? null, ctBaseEur: entry.ctPriceEur ?? null };
+
+  const ctNow = Number(product.price_cents) / 100;
+  const computed = computePriceValue(product, options, override);
+  const hasFixedPrice = Number.isFinite(Number(override.price)) && Number(override.price) > 0;
+  const recorded = Number(entry.priceEur);
+  if (hasFixedPrice || !Number.isFinite(recorded) || !Number.isFinite(ctNow)) {
+    return { priceEur: computed, ctBaseEur: Number.isFinite(ctNow) ? ctNow : null };
+  }
+
+  const threshold =
+    (Number(settings.priceUpdateThresholdPct) || DEFAULT_PRICE_UPDATE_THRESHOLD_PCT) / 100;
+  const base = Number(entry.ctPriceEur);
+
+  if (!Number.isFinite(base) || base <= 0) {
+    // Inserzioni caricate prima della regola: si confronta direttamente il
+    // prezzo eBay calcolato con quello online.
+    const drift = recorded > 0 ? Math.abs(computed - recorded) / recorded : 1;
+    return drift > threshold
+      ? { priceEur: computed, ctBaseEur: ctNow }
+      : { priceEur: recorded, ctBaseEur: ctNow };
+  }
+
+  const drift = Math.abs(ctNow - base) / base;
+  return drift > threshold
+    ? { priceEur: computed, ctBaseEur: ctNow }
+    : { priceEur: recorded, ctBaseEur: base };
+}
+
+// Proposta d'acquisto: rifiuto automatico sotto autoDeclinePct del prezzo,
+// accettazione automatica da autoAcceptPct in su (percentuali sul prezzo).
+const DEFAULT_BEST_OFFER = { enabled: true, autoAcceptPct: 90, autoDeclinePct: 70 };
+
+function getBestOfferSettings(settings) {
+  return { ...DEFAULT_BEST_OFFER, ...(settings.bestOffer ?? {}) };
+}
+
+function buildBestOfferTerms(priceEur, settings) {
+  const config = getBestOfferSettings(settings);
+  if (!config.enabled || !Number.isFinite(Number(priceEur))) return null;
+
+  const round = (value) => Math.round(value * 100) / 100;
+  const autoAccept = round((priceEur * config.autoAcceptPct) / 100);
+  const autoDecline = round((priceEur * config.autoDeclinePct) / 100);
+  const terms = { bestOfferEnabled: true };
+  // eBay richiede rifiuto < accettazione < prezzo.
+  if (config.autoAcceptPct > 0 && autoAccept < priceEur) {
+    terms.autoAcceptPrice = { value: autoAccept.toFixed(2), currency: "EUR" };
+  }
+  if (config.autoDeclinePct > 0 && autoDecline < autoAccept) {
+    terms.autoDeclinePrice = { value: autoDecline.toFixed(2), currency: "EUR" };
+  }
+  return terms;
 }
 
 function assertSettingsReady(settings) {
@@ -385,12 +577,28 @@ async function publishProduct(product, settings, options = {}) {
     );
   }
 
+  // Le carte gradate richiedono descrittori di gradazione (ente, voto,
+  // certificato) che CardTrader non fornisce in modo strutturato: vanno
+  // pubblicate a mano o escluse.
+  if (product.graded) {
+    throw new Error(
+      "Carta gradata: eBay richiede ente e voto di gradazione. Pubblicarla manualmente oppure escluderla.",
+    );
+  }
+
   const description = buildDescription(product, settings, override);
   const inventoryItem = {
     availability: {
       shipToLocationAvailability: { quantity },
     },
     condition: mapCondition(getProductCondition(product.properties_hash), settings),
+    // Obbligatorio per le carte non gradate: "Condizione della carta" (40001).
+    conditionDescriptors: [
+      {
+        name: CARD_CONDITION_DESCRIPTOR_ID,
+        values: [mapConditionDescriptor(getProductCondition(product.properties_hash))],
+      },
+    ],
     product: {
       title: buildTitle(product, override),
       description,
@@ -413,11 +621,14 @@ async function publishProduct(product, settings, options = {}) {
       price: { value: priceValue.toFixed(2), currency: "EUR" },
     },
     listingPolicies: {
-      fulfillmentPolicyId: settings.fulfillmentPolicyId,
+      fulfillmentPolicyId: selectFulfillmentPolicyId(priceValue, settings),
       paymentPolicyId: settings.paymentPolicyId,
       returnPolicyId: settings.returnPolicyId,
     },
   };
+
+  const bestOfferTerms = buildBestOfferTerms(priceValue, settings);
+  if (bestOfferTerms) offerBody.listingPolicies.bestOfferTerms = bestOfferTerms;
 
   const existingOffers = await ebayService.getOffersBySku(sku);
   let offerId;
@@ -444,6 +655,12 @@ async function publishProduct(product, settings, options = {}) {
     offerId,
     listingId,
     updated: alreadyPublished,
+    fulfillmentPolicyId: offerBody.listingPolicies.fulfillmentPolicyId,
+    // Prezzo su cui sono calcolate le soglie della proposta d'acquisto: se il
+    // prezzo cambia, le soglie vanno ricalcolate (vedi syncQuantities).
+    bestOfferPriceEur: bestOfferTerms ? priceValue : null,
+    // Prezzo CardTrader su cui è basato il prezzo eBay (base della soglia 2%).
+    ctPriceEur: Number(product.price_cents) / 100,
     priceEur: priceValue,
     quantity,
   };
@@ -514,7 +731,10 @@ async function publishProducts(productIds, rawOptions = {}) {
         offerId: outcome.offerId,
         listingId: outcome.listingId,
         priceEur: outcome.priceEur,
+        ctPriceEur: outcome.ctPriceEur,
         quantity: outcome.quantity,
+        fulfillmentPolicyId: outcome.fulfillmentPolicyId,
+        bestOfferPriceEur: outcome.bestOfferPriceEur,
         title: buildTitle(product, overrides[String(productId)] ?? {}),
         status: "PUBLISHED",
       });
@@ -610,6 +830,407 @@ async function getProductDetail(productId, rawOptions = {}) {
       descriptionHtml: buildGeneratedDescription(product),
       priceEur: computePriceValue(product, options, {}),
     },
+  };
+}
+
+// --- Sincronizzazione quantità/prezzi CardTrader -> inserzioni eBay ---
+//
+// Per ogni articolo nello storico pubblicazioni confronta quantità e prezzo
+// correnti (da CardTrader + override) con quelli dell'ultima pubblicazione:
+//   - cambiati        -> bulk_update_price_quantity (25 SKU per chiamata)
+//   - quantità a zero -> l'inserzione risulta esaurita (stato OUT_OF_STOCK)
+//   - tornato disponibile dopo un OUT_OF_STOCK -> ripubblicazione completa
+async function syncQuantities(rawOptions = {}) {
+  const settings = ebayService.getSettings();
+  const options = withDefaultMarkup(rawOptions, settings);
+  const overrides = ebayService.getOverrides();
+  const history = ebayService.getPublishedHistory();
+  const cardTraderService = createCardTraderService(options.runtimeConfig ?? {});
+  const products = await loadProducts(cardTraderService, { force: true });
+  const productById = new Map(products.map((product) => [product.id, product]));
+
+  const toUpdate = [];
+  const toRevive = [];
+  const toSwitchPolicy = [];
+  const pendingCtBases = {};
+  const bestOfferEnabled = getBestOfferSettings(settings).enabled;
+  const maxRepublishPerRun =
+    Number(rawOptions.maxRepublishPerRun) || POLICY_SWITCH_MAX_PER_RUN;
+  const results = [];
+  let checked = 0;
+  let unchanged = 0;
+
+  for (const [key, entry] of Object.entries(history)) {
+    if (entry.status !== "PUBLISHED" && entry.status !== "OUT_OF_STOCK") continue;
+    checked += 1;
+
+    const productId = Number(key);
+    const override = overrides[key] ?? {};
+    const product = productById.get(productId);
+
+    // Prodotto sparito dall'export CardTrader (venduto del tutto) o escluso
+    // nel frattempo: la quantità su eBay deve andare a zero.
+    const quantity =
+      product && !override.excluded ? computeQuantity(product, override) : 0;
+    const { priceEur, ctBaseEur } = resolveSyncPrice(entry, product, override, options, settings);
+
+    if (entry.status === "OUT_OF_STOCK") {
+      if (quantity > 0 && product) {
+        toRevive.push({ product, override });
+      } else {
+        unchanged += 1;
+      }
+      continue;
+    }
+
+    // Prezzo che attraversa la soglia della spedizione economica: la policy
+    // va cambiata, e per farlo serve riscrivere l'offerta (non il bulk update).
+    const recordedPolicy = entry.fulfillmentPolicyId ?? settings.fulfillmentPolicyId;
+    const desiredPolicy = selectFulfillmentPolicyId(priceEur, settings);
+    const switchFailedRecently =
+      entry.policySwitchFailedAt &&
+      Date.now() - Date.parse(entry.policySwitchFailedAt) < POLICY_SWITCH_RETRY_MS;
+    // Proposta d'acquisto: soglie assenti o calcolate su un prezzo diverso
+    // da quello attuale (evita accettazioni automatiche sotto prezzo).
+    const bestOfferStale =
+      bestOfferEnabled && priceEur != null && Number(entry.bestOfferPriceEur) !== priceEur;
+    if (
+      product &&
+      quantity > 0 &&
+      desiredPolicy &&
+      (desiredPolicy !== recordedPolicy || bestOfferStale) &&
+      !switchFailedRecently &&
+      toSwitchPolicy.length < maxRepublishPerRun
+    ) {
+      toSwitchPolicy.push({ product, override, priceEur, ctBaseEur });
+      continue;
+    }
+
+    const qtyChanged = Number(entry.quantity) !== quantity;
+    const priceChanged =
+      priceEur != null && Number(entry.priceEur) !== priceEur;
+    if (!qtyChanged && !priceChanged) {
+      // Base CT mancante (inserzioni caricate prima di questa regola):
+      // la si registra senza toccare eBay.
+      if (ctBaseEur != null && entry.ctPriceEur == null) {
+        pendingCtBases[key] = ctBaseEur;
+      }
+      unchanged += 1;
+      continue;
+    }
+
+    if (!entry.offerId) {
+      results.push({
+        productId,
+        sku: entry.sku,
+        ok: false,
+        error:
+          "offerId mancante nello storico: eseguire 'Sincronizza storico da eBay' nella tab Pubblicati.",
+      });
+      continue;
+    }
+
+    toUpdate.push({
+      productId,
+      sku: entry.sku,
+      offerId: entry.offerId,
+      quantity,
+      priceEur,
+      ctBaseEur,
+    });
+  }
+
+  // eBay rifiuta quantità 0 su un'offerta pubblicata (errore 25004): gli
+  // esauriti vanno ritirati, e tornano online via ripubblicazione (toRevive).
+  const soldOutItems = toUpdate.filter((item) => item.quantity === 0);
+  for (const item of soldOutItems) {
+    try {
+      await ebayService.withdrawOffer(item.offerId);
+      ebayService.recordPublished(item.productId, {
+        quantity: 0,
+        status: "OUT_OF_STOCK",
+      });
+      results.push({ ...item, ok: true, soldOut: true });
+    } catch (error) {
+      results.push({ ...item, ok: false, error: error.message });
+    }
+  }
+
+  const toBulkUpdate = toUpdate.filter((item) => item.quantity > 0);
+  for (let i = 0; i < toBulkUpdate.length; i += 25) {
+    const chunk = toBulkUpdate.slice(i, i + 25);
+    const requests = chunk.map((item) => ({
+      sku: item.sku,
+      shipToLocationAvailability: { quantity: item.quantity },
+      offers: [
+        {
+          offerId: item.offerId,
+          availableQuantity: item.quantity,
+          ...(item.priceEur != null
+            ? { price: { value: item.priceEur.toFixed(2), currency: "EUR" } }
+            : {}),
+        },
+      ],
+    }));
+
+    try {
+      const response = await ebayService.bulkUpdatePriceQuantity(requests);
+      const responseBySku = new Map(
+        (response.responses ?? []).map((item) => [item.sku, item]),
+      );
+
+      for (const item of chunk) {
+        const outcome = responseBySku.get(item.sku);
+        const ok = !outcome || Number(outcome.statusCode) < 300;
+        if (!ok) {
+          results.push({
+            ...item,
+            ok: false,
+            error: `HTTP ${outcome.statusCode}: ${JSON.stringify(outcome.errors ?? [])}`,
+          });
+          continue;
+        }
+
+        const patch = {
+          quantity: item.quantity,
+          status: item.quantity === 0 ? "OUT_OF_STOCK" : "PUBLISHED",
+        };
+        if (item.priceEur != null) patch.priceEur = item.priceEur;
+        if (item.ctBaseEur != null) patch.ctPriceEur = item.ctBaseEur;
+        ebayService.recordPublished(item.productId, patch);
+        results.push({ ...item, ok: true, soldOut: item.quantity === 0 });
+      }
+    } catch (error) {
+      for (const item of chunk) {
+        results.push({ ...item, ok: false, error: error.message });
+      }
+    }
+  }
+
+  // Ripubblicazione completa per gli articoli tornati disponibili: una
+  // inserzione esaurita non si riattiva con il solo aggiornamento quantità.
+  for (const { product, override } of toRevive) {
+    try {
+      const outcome = await publishProduct(product, settings, {
+        ...options,
+        cardTraderService,
+        override,
+      });
+      ebayService.recordPublished(product.id, {
+        sku: outcome.sku,
+        offerId: outcome.offerId,
+        listingId: outcome.listingId,
+        priceEur: outcome.priceEur,
+        ctPriceEur: outcome.ctPriceEur,
+        quantity: outcome.quantity,
+        fulfillmentPolicyId: outcome.fulfillmentPolicyId,
+        bestOfferPriceEur: outcome.bestOfferPriceEur,
+        status: "PUBLISHED",
+      });
+      results.push({ ...outcome, ok: true, revived: true });
+    } catch (error) {
+      results.push({
+        productId: product.id,
+        sku: buildSku(product),
+        ok: false,
+        error: error.message,
+      });
+    }
+  }
+
+  // Ripubblicazioni in parallelo (ognuna richiede 3-4 chiamate eBay).
+  const republishQueue = [...toSwitchPolicy];
+  await Promise.all(Array.from({ length: REPUBLISH_CONCURRENCY }, async () => {
+    while (republishQueue.length > 0) {
+      await republishOne(republishQueue.shift());
+    }
+  }));
+
+  async function republishOne({ product, override, priceEur, ctBaseEur }) {
+    try {
+      // Il prezzo resta quello deciso dalla soglia del 2%: cambiare policy o
+      // soglie della proposta non deve ritoccare il prezzo.
+      const outcome = await publishProduct(product, settings, {
+        ...options,
+        priceOverrides: priceEur != null ? { [String(product.id)]: priceEur } : undefined,
+        cardTraderService,
+        override,
+      });
+      ebayService.recordPublished(product.id, {
+        ctPriceEur: ctBaseEur,
+        priceEur: outcome.priceEur,
+        quantity: outcome.quantity,
+        fulfillmentPolicyId: outcome.fulfillmentPolicyId,
+        bestOfferPriceEur: outcome.bestOfferPriceEur,
+        policySwitchFailedAt: null,
+        status: "PUBLISHED",
+      });
+      results.push({ ...outcome, ok: true, policySwitched: true });
+    } catch (error) {
+      // Tipicamente foto sotto risoluzione: l'inserzione resta com'è e il
+      // cambio viene ritentato solo dopo POLICY_SWITCH_RETRY_MS.
+      ebayService.recordPublished(product.id, {
+        policySwitchFailedAt: new Date().toISOString(),
+        status: "PUBLISHED",
+      });
+      results.push({ productId: product.id, sku: buildSku(product), ok: false, error: error.message });
+    }
+  }
+
+  // Basi CT delle inserzioni caricate prima della regola del 2%: un'unica
+  // scrittura sullo storico riletto ora (non sovrascrive gli aggiornamenti
+  // fatti durante il giro).
+  const baseKeys = Object.keys(pendingCtBases);
+  if (baseKeys.length > 0) {
+    const fresh = ebayService.getPublishedHistory();
+    for (const key of baseKeys) {
+      if (fresh[key] && fresh[key].ctPriceEur == null) {
+        fresh[key] = { ...fresh[key], ctPriceEur: pendingCtBases[key] };
+      }
+    }
+    ebayService.replacePublishedHistory(fresh);
+  }
+
+  return {
+    checked,
+    unchanged,
+    ctBasesRecorded: baseKeys.length,
+    policySwitched: results.filter((r) => r.ok && r.policySwitched).length,
+    updated: results.filter((r) => r.ok && !r.soldOut && !r.revived && !r.policySwitched).length,
+    soldOut: results.filter((r) => r.ok && r.soldOut).length,
+    revived: results.filter((r) => r.ok && r.revived).length,
+    failed: results.filter((r) => !r.ok).length,
+    results,
+    syncedAt: new Date().toISOString(),
+  };
+}
+
+// --- Pubblicazione automatica dei prodotti CardTrader nuovi ---
+//
+// Pubblica i prodotti mai pubblicati (assenti dallo storico), esclusi:
+// esclusi manuali, sigillati (senza rarità), gradate, quantità zero.
+// I prodotti rifiutati da eBay finiscono nel registro fallimenti e vengono
+// ritentati solo dopo AUTO_PUBLISH_RETRY_MS.
+const AUTO_PUBLISH_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Regola temporanea per risparmiare la quota di inserzioni gratuite: fino
+// alla data indicata non si pubblicano le carte delle rarità elencate con
+// valore CardTrader sotto la soglia (settings.autoPublishSkip).
+function isSkippedByQuotaRule(product, settings, now = Date.now()) {
+  const rule = settings.autoPublishSkip;
+  if (!rule?.until || now >= Date.parse(rule.until)) return false;
+  const rarity = String(getProductRarity(product.properties_hash) ?? "").toLowerCase();
+  const rarities = (rule.rarities ?? []).map((r) => String(r).toLowerCase());
+  if (!rarities.includes(rarity)) return false;
+  const ctPrice = Number(product.price_cents) / 100;
+  return Number.isFinite(ctPrice) && ctPrice < Number(rule.maxCtPriceEur ?? 1);
+}
+
+async function autoPublishNewProducts(rawOptions = {}) {
+  const settings = ebayService.getSettings();
+  assertSettingsReady(settings);
+  const maxPerRun = Math.max(1, Number(rawOptions.maxPerRun) || 100);
+
+  const cardTraderService = createCardTraderService(rawOptions.runtimeConfig ?? {});
+  const products = await loadProducts(cardTraderService, { force: true });
+  const history = ebayService.getPublishedHistory();
+  const overrides = ebayService.getOverrides();
+  const failures = ebayService.getAutoPublishFailures();
+  const now = Date.now();
+
+  const candidates = products.filter((product) => {
+    const key = String(product.id);
+    if (history[key]) return false;
+    if (overrides[key]?.excluded) return false;
+    if (Number(product.quantity ?? 0) < 1) return false;
+    if (product.graded) return false;
+    if (!getProductRarity(product.properties_hash)) return false;
+    if (isSkippedByQuotaRule(product, settings, now)) return false;
+    const failure = failures[key];
+    if (failure && now - Date.parse(failure.at) < AUTO_PUBLISH_RETRY_MS) return false;
+    return true;
+  });
+
+  const batch = candidates.slice(0, maxPerRun).map((product) => product.id);
+  if (batch.length === 0) {
+    return { candidates: 0, published: 0, failed: 0, remaining: 0, results: [] };
+  }
+
+  const outcome = await publishProducts(batch, { ...rawOptions, skipPublished: true });
+
+  const nextFailures = { ...ebayService.getAutoPublishFailures() };
+  for (const result of outcome.results) {
+    const key = String(result.productId);
+    if (result.ok) delete nextFailures[key];
+    else nextFailures[key] = { at: new Date().toISOString(), error: result.error };
+  }
+  ebayService.saveAutoPublishFailures(nextFailures);
+
+  return {
+    candidates: candidates.length,
+    published: outcome.succeeded,
+    failed: outcome.failed,
+    remaining: Math.max(0, candidates.length - batch.length),
+    results: outcome.results,
+  };
+}
+
+// --- Vendite eBay -> scala quantità su CardTrader ---
+//
+// Ogni vendita eBay di uno SKU CT-<id> viene scalata una sola volta dal
+// prodotto CardTrader (registro processedSales). Al primo avvio il registro
+// viene solo inizializzato: le vendite già presenti erano state gestite a mano.
+async function syncSalesToCardTrader(options = {}) {
+  const cardTraderService = createCardTraderService(options.runtimeConfig ?? {});
+  const sales = await ebayService.getRecentSales({ days: 3 });
+  const existing = ebayService.getProcessedSales();
+  const saleKey = (sale) => sale.orderLineItemId || sale.transactionId;
+
+  if (existing === null) {
+    const seeded = {};
+    for (const sale of sales) {
+      seeded[saleKey(sale)] = { at: new Date().toISOString(), seeded: true };
+    }
+    ebayService.saveProcessedSales(seeded);
+    return { initialized: true, seeded: sales.length, decremented: 0, failed: 0, results: [] };
+  }
+
+  const processed = { ...existing };
+  const results = [];
+
+  for (const sale of sales) {
+    const key = saleKey(sale);
+    if (processed[key]) continue;
+
+    const productId = parseProductIdFromSku(sale.sku);
+    if (!productId) {
+      // Inserzione non creata da questa integrazione: nulla da scalare.
+      processed[key] = { at: new Date().toISOString(), skipped: "sku non CT" };
+      continue;
+    }
+
+    try {
+      await cardTraderService.incrementProductQuantity(productId, -sale.quantity);
+      processed[key] = { at: new Date().toISOString(), productId, quantity: sale.quantity };
+      results.push({ productId, sku: sale.sku, quantity: sale.quantity, title: sale.title, ok: true });
+    } catch (error) {
+      // Non marcata come elaborata: verrà ritentata al prossimo giro.
+      results.push({ productId, sku: sale.sku, ok: false, error: error.message });
+    }
+  }
+
+  // Tiene solo le chiavi recenti per non far crescere il registro all'infinito.
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  for (const [key, value] of Object.entries(processed)) {
+    if (Date.parse(value.at) < cutoff) delete processed[key];
+  }
+  ebayService.saveProcessedSales(processed);
+
+  return {
+    initialized: false,
+    decremented: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    results,
   };
 }
 
@@ -851,6 +1472,10 @@ module.exports = {
   getPublishedOffers,
   removeListing,
   syncPublishedFromEbay,
+  syncQuantities,
+  syncSalesToCardTrader,
+  autoPublishNewProducts,
+  resolveSyncPrice,
   compareProduct,
   compareProducts,
 };

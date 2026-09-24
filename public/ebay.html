@@ -240,6 +240,7 @@
     <button data-tab="impostazioni">Impostazioni</button>
     <button data-tab="inventario">Inventario</button>
     <button data-tab="pubblicati">Pubblicati</button>
+    <button data-tab="vendite">Vendite</button>
   </nav>
 </header>
 
@@ -374,8 +375,8 @@
       <div id="bulkRarityWrap" style="display:none">
         <label>Common € · Uncommon € · Rare € · Resto ricarico %</label>
         <div class="range-pair">
-          <input id="rarCommon" type="number" step="0.01" value="0.50" style="max-width:74px" title="Prezzo fisso Common">
-          <input id="rarUncommon" type="number" step="0.01" value="0.75" style="max-width:74px" title="Prezzo fisso Uncommon">
+          <input id="rarCommon" type="number" step="0.01" min="1" value="1.00" style="max-width:74px" title="Prezzo fisso Common (minimo eBay 1,00)">
+          <input id="rarUncommon" type="number" step="0.01" min="1" value="1.20" style="max-width:74px" title="Prezzo fisso Uncommon">
           <input id="rarRare" type="number" step="0.01" value="1.00" style="max-width:74px" title="Prezzo fisso Rare">
           <input id="rarRestPct" type="number" step="1" value="50" style="max-width:74px" title="Ricarico % applicato a tutte le altre rarità (diventa il ricarico di default nelle Impostazioni)">
         </div>
@@ -423,6 +424,37 @@
   </div>
 </section>
 
+<!-- TAB VENDITE -->
+<section id="tab-vendite" style="display:none">
+  <div class="card">
+    <h2>Vendite eBay</h2>
+    <div class="toolbar">
+      <div>
+        <label>Periodo</label>
+        <select id="salesDays" style="max-width:160px">
+          <option value="1">Ultime 24 ore</option>
+          <option value="7">Ultimi 7 giorni</option>
+          <option value="30" selected>Ultimi 30 giorni</option>
+          <option value="60">Ultimi 60 giorni</option>
+        </select>
+      </div>
+      <div>
+        <button class="btn secondary" id="btnLoadSales" style="margin-top:0">Aggiorna</button>
+      </div>
+    </div>
+    <div class="grid2" id="salesTotals" style="margin-bottom:12px"></div>
+    <div class="hint" id="salesMeta"></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Data</th><th>Carta</th><th class="num">Qta</th><th class="num">Prezzo €</th><th>Acquirente</th><th>Pagato</th><th>Spedito</th><th>CardTrader</th></tr>
+        </thead>
+        <tbody id="salesBody"><tr><td colspan="8" class="hint">Premi "Aggiorna" per caricare le vendite.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
 <!-- TAB PUBBLICATI -->
 <section id="tab-pubblicati" style="display:none">
   <div class="card">
@@ -434,6 +466,8 @@
     </p>
     <button class="btn secondary" id="btnLoadOffers">Carica inserzioni</button>
     <button class="btn secondary" id="btnSyncPublished">Sincronizza storico da eBay</button>
+    <button class="btn" id="btnSyncQuantities" title="Riallinea quantità e prezzi delle inserzioni pubblicate alla disponibilità CardTrader corrente">Sincronizza quantità/prezzi</button>
+    <div class="hint" id="syncQuantitiesResult" style="margin-top:8px"></div>
     <div style="overflow-x:auto; margin-top:12px">
       <table id="offersTable">
         <thead>
@@ -1095,7 +1129,7 @@ document.getElementById("btnBulkApply").addEventListener("click", async () => {
     if (!confirm(
       `Applicare il listino ai selezionati?\n` +
       `Common → €${rarityPrices.common.toFixed(2)} · Uncommon → €${rarityPrices.uncommon.toFixed(2)} · Rare → €${rarityPrices.rare.toFixed(2)}\n` +
-      `Fixed: ricarico ${rarityPrices.restPct}% con prezzo minimo €${rarityPrices.rare.toFixed(2)}. Senza rarità (sigillati) ed esclusi: non toccati.\n` +
+      `I prezzi per rarità sono MINIMI: se CT +${rarityPrices.restPct}% è più alto vale quello. Fixed: minimo come le Rare. Senza rarità (sigillati) ed esclusi: non toccati.\n` +
       `Tutte le altre rarità: nessun prezzo fisso, seguiranno il ricarico di default ${rarityPrices.restPct}% sul prezzo CardTrader (aggiornato nelle Impostazioni).`,
     )) return;
   }
@@ -1130,19 +1164,19 @@ document.getElementById("btnBulkApply").addEventListener("click", async () => {
       if (item.excluded) continue; // gli esclusi non vengono prezzati
       const rarity = getItemRarity(item);
       if (!rarity) continue; // senza rarità (sigillati): il listino non li tratta
-      if (rarity === "common") overrides[id] = { price: Number(rarityPrices.common.toFixed(2)) };
-      else if (rarity === "uncommon") overrides[id] = { price: Number(rarityPrices.uncommon.toFixed(2)) };
-      else if (rarity === "rare") overrides[id] = { price: Number(rarityPrices.rare.toFixed(2)) };
-      else if (rarity === "fixed") {
-        // Fixed: seguono CT + ricarico, ma con prezzo minimo pari al prezzo Rare.
-        const computed = base != null ? base * (1 + rarityPrices.restPct / 100) : null;
-        overrides[id] = computed != null && computed < rarityPrices.rare
-          ? { price: Number(rarityPrices.rare.toFixed(2)) }
-          : { price: null };
-      }
-      // Le altre rarità non ricevono un prezzo fisso: se avevano un override
-      // di prezzo lo si rimuove, cosi' tornano a seguire il ricarico di default.
-      else overrides[id] = { price: null };
+      // Il prezzo per rarità è un MINIMO: una carta che su CardTrader vale di
+      // più (vintage, prime edizioni…) segue sempre CT + ricarico.
+      const floorByRarity = {
+        common: rarityPrices.common,
+        uncommon: rarityPrices.uncommon,
+        rare: rarityPrices.rare,
+        fixed: rarityPrices.rare,
+      };
+      const floor = floorByRarity[rarity];
+      const computed = base != null ? base * (1 + rarityPrices.restPct / 100) : null;
+      overrides[id] = floor != null && computed != null && computed < floor
+        ? { price: Number(floor.toFixed(2)) }
+        : { price: null };
     } else if (action === "round99") {
       const current = item.ebayPriceEur;
       if (current == null) continue;
@@ -1484,7 +1518,79 @@ document.getElementById("btnDetailReset").addEventListener("click", async () => 
   } catch (error) { toast(error.message, true); }
 });
 
+// --- vendite ---
+const CT_STATUS_LABELS = {
+  decremented: ['<span class="ok-text">Scalata ✔</span>'],
+  manual: ['<span class="hint" style="margin:0">Gestita a mano</span>'],
+  "not-ct": ['<span class="hint" style="margin:0">Non da CardTrader</span>'],
+  pending: ['<span class="err-text">Da scalare</span>'],
+};
+
+async function loadSales(force = false) {
+  const button = document.getElementById("btnLoadSales");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Caricamento…';
+  try {
+    const days = document.getElementById("salesDays").value;
+    const data = await api(`/sales?days=${days}${force ? "&force=true" : ""}`);
+    const t = data.totals;
+    document.getElementById("salesTotals").innerHTML =
+      `<div><strong style="font-size:22px">${t.orders}</strong><div class="hint" style="margin:0">ordini</div></div>` +
+      `<div><strong style="font-size:22px">${t.items}</strong><div class="hint" style="margin:0">carte vendute</div></div>` +
+      `<div><strong style="font-size:22px">€${fmt(t.revenueEur)}</strong><div class="hint" style="margin:0">incasso (esclusa spedizione)</div></div>` +
+      `<div><strong style="font-size:22px" class="${t.pendingCardTrader ? "err-text" : ""}">${t.pendingCardTrader}</strong><div class="hint" style="margin:0">da scalare su CardTrader</div></div>`;
+    document.getElementById("salesMeta").textContent =
+      `Dati eBay aggiornati alle ${new Date(data.fetchedAt).toLocaleTimeString("it-IT")}` +
+      (data.cached ? " (copia di pochi minuti fa)" : "") +
+      " — lo scalo su CardTrader avviene in automatico ogni 30 minuti.";
+    document.getElementById("salesBody").innerHTML = data.sales.length
+      ? data.sales.map((s) => `
+        <tr>
+          <td>${s.soldAt ? new Date(s.soldAt).toLocaleString("it-IT") : "—"}</td>
+          <td>${s.itemId ? `<a href="https://www.ebay.it/itm/${escapeHtml(s.itemId)}" target="_blank">${escapeHtml(s.title ?? s.sku)}</a>` : escapeHtml(s.title ?? s.sku)}</td>
+          <td class="num">${s.quantity}</td>
+          <td class="num">${fmt(s.priceEur)}</td>
+          <td>${escapeHtml(s.buyer ?? "—")}</td>
+          <td>${s.paid ? "✔" : "—"}</td>
+          <td>${s.shipped ? "✔" : "—"}</td>
+          <td>${(CT_STATUS_LABELS[s.cardTraderStatus] ?? ["—"])[0]}</td>
+        </tr>`).join("")
+      : '<tr><td colspan="8" class="hint">Nessuna vendita nel periodo.</td></tr>';
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Aggiorna";
+  }
+}
+
+document.getElementById("btnLoadSales").addEventListener("click", () => loadSales(true));
+document.getElementById("salesDays").addEventListener("change", () => loadSales(false));
+document.querySelector('nav button[data-tab="vendite"]').addEventListener("click", () => loadSales(false));
+
 // --- pubblicati ---
+document.getElementById("btnSyncQuantities").addEventListener("click", async () => {
+  const button = document.getElementById("btnSyncQuantities");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>Sincronizzazione…';
+  try {
+    const outcome = await api("/sync-quantities", { method: "POST" });
+    document.getElementById("syncQuantitiesResult").innerHTML =
+      `Verificati ${outcome.checked} — invariati ${outcome.unchanged}, ` +
+      `<span class="ok-text">aggiornati ${outcome.updated}</span>, ` +
+      `esauriti ${outcome.soldOut}, ripubblicati ${outcome.revived}` +
+      (outcome.failed ? `, <span class="err-text">errori ${outcome.failed}</span>` : "") +
+      ` · ${new Date(outcome.syncedAt).toLocaleTimeString("it-IT")}`;
+    toast(`Sincronizzazione completata: ${outcome.updated + outcome.soldOut + outcome.revived} inserzioni aggiornate ✔`);
+    if (inventory.length) await reloadInventory();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Sincronizza quantità/prezzi";
+  }
+});
+
 document.getElementById("btnSyncPublished").addEventListener("click", async () => {
   const button = document.getElementById("btnSyncPublished");
   button.disabled = true;

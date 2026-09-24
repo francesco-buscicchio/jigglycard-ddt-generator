@@ -412,30 +412,60 @@ function buildCardTraderFallbackKey(blueprintId, propertiesHash) {
   ].join("|");
 }
 
-// Sincronizza CardTrader: snapshot inventario (per i prezzi di carico) e
-// ordini da venditore (vendite reali con prezzo esatto). Le vendite NON
-// vengono dedotte dai cali di quantita per evitare doppi conteggi.
-async function syncCardTrader(options = {}) {
-  const db = await getDB(options);
+// products/export porta solo `expansion.id`: codice e nome del set si
+// ricavano dalla lista espansioni.
+function buildExpansionMap(expansionsRes) {
+  return new Map(
+    (Array.isArray(expansionsRes?.data) ? expansionsRes.data : []).map(
+      (expansion) => [
+        expansion.id,
+        {
+          code: expansion.code ?? "",
+          name: expansion.name ?? expansion.name_en ?? "",
+        },
+      ],
+    ),
+  );
+}
+
+// Registra nel tracking uno snapshot dell'inventario CardTrader: gli articoli
+// mai visti entrano con il prezzo di carico corrente (anche se non sono stati
+// venduti), quelli noti aggiornano prezzo/quantita', quelli spariti vengono
+// disattivati. Gli ordini non vengono toccati.
+//
+// `provided.products` permette a chi ha gia' scaricato products/export (es.
+// l'allineamento prezzi) di riusarlo senza un secondo download; lo stesso vale
+// per `provided.expansionsById` (Map id -> { code, name }). `provided.source`
+// finisce nello snapshot per distinguere le sync manuali da quelle innescate
+// dal prezzatore.
+async function syncCardTraderInventory(options = {}, provided = {}) {
+  const db = provided.db ?? (await getDB(options));
   await ensureIndexes(db);
 
-  const cardTraderService = createCardTraderService(options);
   const itemsCol = db.collection(ITEMS_COLLECTION);
   const salesCol = db.collection(SALES_COLLECTION);
   const snapshotsCol = db.collection(SNAPSHOTS_COLLECTION);
-  const now = new Date();
+  const now = provided.now ?? new Date();
+  const source = provided.source ?? "cardtrader-api";
 
-  // --- Snapshot inventario ---
-  const [exportRes, expansionsRes] = await Promise.all([
-    cardTraderService.getMyProducts(),
-    cardTraderService.getExpansions(),
-  ]);
-  const products = Array.isArray(exportRes?.data) ? exportRes.data : [];
-  const expansionCodeById = new Map(
-    (Array.isArray(expansionsRes?.data) ? expansionsRes.data : []).map(
-      (expansion) => [expansion.id, expansion.code ?? ""],
-    ),
-  );
+  let products = Array.isArray(provided.products) ? provided.products : null;
+  let expansionsById =
+    provided.expansionsById instanceof Map ? provided.expansionsById : null;
+
+  if (!products || !expansionsById) {
+    const cardTraderService =
+      provided.cardTraderService ?? createCardTraderService(options);
+    const [exportRes, expansionsRes] = await Promise.all([
+      products ? null : cardTraderService.getMyProducts(),
+      expansionsById ? null : cardTraderService.getExpansions(),
+    ]);
+    if (!products) {
+      products = Array.isArray(exportRes?.data) ? exportRes.data : [];
+    }
+    if (!expansionsById) {
+      expansionsById = buildExpansionMap(expansionsRes);
+    }
+  }
 
   // Articoli Cardmarket per chiave identita': il prezzo con cui un prodotto
   // viene caricato su TCGPowertools e' il vero prezzo di carico anche su
@@ -472,9 +502,12 @@ async function syncCardTrader(options = {}) {
     seenKeys.add(itemKey);
     const existing = existingByKey.get(itemKey);
     const quantity = Number(product?.quantity ?? 0);
+    const expansion = expansionsById.get(product?.expansion?.id) ?? null;
+    const setCode = expansion?.code ?? "";
+    const setName = expansion?.name ?? product?.expansion_name ?? "";
     const identityKey = buildCardTraderIdentityKey(
       product?.properties_hash,
-      expansionCodeById.get(product?.expansion?.id),
+      setCode,
     );
     const cardmarketTwin = identityKey
       ? cardmarketByIdentity.get(identityKey)
@@ -496,8 +529,8 @@ async function syncCardTrader(options = {}) {
               product?.properties_hash,
             ),
             name: product?.name_en ?? product?.name ?? "",
-            set: product?.expansion_name ?? "",
-            setCode: expansionCodeById.get(product?.expansion?.id) ?? "",
+            set: setName,
+            setCode,
             rarity: getCardTraderRarity(product?.properties_hash) ?? "",
             condition: product?.properties_hash?.condition ?? "",
             language: getCardTraderLanguage(product?.properties_hash) ?? "",
@@ -518,8 +551,12 @@ async function syncCardTrader(options = {}) {
       continue;
     }
 
+    // set/setCode inclusi anche in aggiornamento: gli articoli registrati
+    // quando l'export non forniva il nome espansione vengono cosi' riparati.
     const updateSet = {
       identityKey,
+      set: setName,
+      setCode,
       lastPriceCents: priceCents,
       lastQuantity: quantity,
       lastSeenAt: now,
@@ -584,7 +621,54 @@ async function syncCardTrader(options = {}) {
     repairedSales = repairResult.modifiedCount ?? 0;
   }
 
-  // Ricarica gli indici di lookup per collegare gli ordini ai prezzi di carico.
+  const totalQuantity = products.reduce(
+    (sum, product) => sum + Number(product?.quantity ?? 0),
+    0,
+  );
+
+  const snapshotInsert = await snapshotsCol.insertOne({
+    platform: PLATFORM_CARDTRADER,
+    importedAt: now,
+    sourceFile: source,
+    itemCount: seenKeys.size,
+    totalQuantity,
+    newItems,
+    linkedToCardmarket,
+    repairedSales,
+  });
+
+  return {
+    platform: PLATFORM_CARDTRADER,
+    snapshotId: snapshotInsert?.insertedId ?? null,
+    itemCount: seenKeys.size,
+    totalQuantity,
+    newItems,
+    linkedToCardmarket,
+    repairedSales,
+  };
+}
+
+// Sincronizza CardTrader: snapshot inventario (per i prezzi di carico) e
+// ordini da venditore (vendite reali con prezzo esatto). Le vendite NON
+// vengono dedotte dai cali di quantita per evitare doppi conteggi.
+async function syncCardTrader(options = {}) {
+  const db = await getDB(options);
+  const cardTraderService = createCardTraderService(options);
+  const now = new Date();
+
+  // --- Snapshot inventario ---
+  const inventory = await syncCardTraderInventory(options, {
+    db,
+    cardTraderService,
+    now,
+    source: "cardtrader-api",
+  });
+
+  const itemsCol = db.collection(ITEMS_COLLECTION);
+  const salesCol = db.collection(SALES_COLLECTION);
+  const snapshotsCol = db.collection(SNAPSHOTS_COLLECTION);
+
+  // Indici di lookup per collegare gli ordini ai prezzi di carico.
   const allItems = await itemsCol
     .find({ platform: PLATFORM_CARDTRADER })
     .toArray();
@@ -666,35 +750,27 @@ async function syncCardTrader(options = {}) {
     }
   }
 
-  const totalQuantity = products.reduce(
-    (sum, product) => sum + Number(product?.quantity ?? 0),
-    0,
-  );
-
-  await snapshotsCol.insertOne({
-    platform: PLATFORM_CARDTRADER,
-    importedAt: now,
-    sourceFile: "cardtrader-api",
-    itemCount: seenKeys.size,
-    totalQuantity,
-    newItems,
-    linkedToCardmarket,
-    repairedSales,
+  const orderStats = {
     ordersFetched: orders.length,
     salesDetected: saleDocs.length,
     salesInserted: insertedSales,
-  });
+  };
+
+  if (inventory.snapshotId) {
+    await snapshotsCol.updateOne(
+      { _id: inventory.snapshotId },
+      { $set: orderStats },
+    );
+  }
 
   return {
     platform: PLATFORM_CARDTRADER,
-    itemCount: seenKeys.size,
-    totalQuantity,
-    newItems,
-    linkedToCardmarket,
-    repairedSales,
-    ordersFetched: orders.length,
-    salesDetected: saleDocs.length,
-    salesInserted: insertedSales,
+    itemCount: inventory.itemCount,
+    totalQuantity: inventory.totalQuantity,
+    newItems: inventory.newItems,
+    linkedToCardmarket: inventory.linkedToCardmarket,
+    repairedSales: inventory.repairedSales,
+    ...orderStats,
   };
 }
 
@@ -758,6 +834,7 @@ module.exports = {
   PLATFORM_CARDMARKET,
   PLATFORM_CARDTRADER,
   importCardmarketSnapshot,
+  syncCardTraderInventory,
   syncCardTrader,
   loadReportData,
 };

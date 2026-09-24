@@ -12,6 +12,7 @@ const apiAuth = require("./middleware/apiAuth");
 const requestContext = require("./middleware/requestContext");
 const requestQueue = require("./services/requestQueue");
 const { startCmsCronScheduler } = require("./services/cmsCronScheduler");
+const { startEbaySyncScheduler } = require("./services/ebaySyncScheduler");
 const { MongoTaskStore } = require("./services/taskStore");
 const { pruneExpiredArtifacts } = require("./services/excelConversionService");
 const cardtraderRoutes = require("./routes/cardtrader");
@@ -154,6 +155,7 @@ function startServer() {
   const app = createApp();
   const retentionTimer = startArtifactRetention();
   const cmsCronJobs = startCmsCronScheduler();
+  const ebaySyncJobs = startEbaySyncScheduler();
 
   initQueuePersistence().finally(() => {
     requestQueue.startScheduler();
@@ -177,6 +179,7 @@ function startServer() {
     requestQueue.stopScheduler();
     clearInterval(retentionTimer);
     cmsCronJobs.forEach((job) => job.stop());
+    ebaySyncJobs.forEach((job) => job.stop());
   });
 
   return server;
