@@ -1029,14 +1029,24 @@ async function alignPricesForGame(
     lines.push(headers.map((h) => csvEscape(row[h])).join(","));
   }
 
+  // Il CSV è solo un resoconto: i prezzi sono già stati inviati a CardTrader.
+  // Nel container la cartella non esiste (è in .gitignore), e un errore qui
+  // non deve far risultare fallito l'allineamento né saltare i giochi dopo.
   const outPath = path.join(
     __dirname,
     "..",
     "excel_export",
     `align-price-${gameConfig.slug}.csv`,
   );
-  fs.writeFileSync(outPath, lines.join("\n"), "utf8");
-  console.log(`[ALIGN-PRICE][${gameConfig.slug}] CSV scritto in ${outPath}`);
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, lines.join("\n"), "utf8");
+    console.log(`[ALIGN-PRICE][${gameConfig.slug}] CSV scritto in ${outPath}`);
+  } catch (error) {
+    console.warn(
+      `[ALIGN-PRICE][${gameConfig.slug}] CSV non scritto (${error.message}): prezzi comunque aggiornati`,
+    );
+  }
   console.log(
     `[ALIGN-PRICE][${gameConfig.slug}] Prezzi segnaposto ignorati=${ignoredPlaceholderListings} | prezzi ripristinati al carico=${restoredPrices}`,
   );

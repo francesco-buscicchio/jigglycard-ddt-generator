@@ -170,6 +170,8 @@ module.exports = {
   CMS_CRON_TIMEZONE: process.env.CMS_CRON_TIMEZONE || "Europe/Rome",
   CMS_CRON_NOTIFICATIONS: process.env.CMS_CRON_NOTIFICATIONS || "*/15 * * * *",
   CMS_CRON_REMINDERS: process.env.CMS_CRON_REMINDERS || "0 7 * * *",
+  CMS_CRON_RESERVATIONS_RELEASE:
+    process.env.CMS_CRON_RESERVATIONS_RELEASE || "*/5 * * * *",
   CMS_CRON_TIMEOUT_MS: numberFromEnv("CMS_CRON_TIMEOUT_MS", 15 * 60 * 1000),
 
   // Sincronizzazione quantità/prezzi delle inserzioni eBay con CardTrader.
