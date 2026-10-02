@@ -53,6 +53,37 @@ test("inserzioni senza base CT: confronto diretto tra prezzo calcolato e online"
   assert.equal(large.priceEur, 37.5);
 });
 
+test("ricarico ridotto: sopra 2 EUR CT +25%, mai sotto 2 EUR, sotto resta +50%", () => {
+  const reduced = { ...options, reducedMarkup: { thresholdEur: 2, markupPercent: 25 } };
+  const price = (ct) => resolveSyncPrice({ priceEur: null }, product(ct), {}, reduced, settings).priceEur;
+  assert.equal(price(1.2), 1.8); // 1,2 * 1,5 sotto soglia
+  assert.equal(price(1.5), 2); // 2,25 a +50% ma 1,875 a +25%: si ferma a 2
+  assert.equal(price(10), 12.5);
+  // prezzo sempre crescente attorno alla soglia
+  const values = [1.3, 1.34, 1.4, 1.6, 1.7].map(price);
+  values.reduce((prev, cur) => { assert.ok(cur >= prev); return cur; });
+});
+
+test("un cambio di regola aggiorna il prezzo anche senza variazione CT", () => {
+  const reduced = { ...options, reducedMarkup: { thresholdEur: 2, markupPercent: 25 } };
+  const entry = { priceEur: 30, ctPriceEur: 20 };
+  const result = resolveSyncPrice(entry, product(20), {}, reduced, settings);
+  assert.equal(result.priceEur, 25);
+});
+
+test("prezzo bloccato di recente: resta quello online", () => {
+  const entry = { priceEur: 30, ctPriceEur: 20, priceBlockedAt: new Date().toISOString() };
+  const result = resolveSyncPrice(entry, product(10), {}, options, settings);
+  assert.equal(result.priceEur, 30);
+});
+
+test("blocco prezzo scaduto: si torna ad aggiornare", () => {
+  const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  const entry = { priceEur: 30, ctPriceEur: 20, priceBlockedAt: old };
+  const result = resolveSyncPrice(entry, product(10), {}, options, settings);
+  assert.equal(result.priceEur, 15);
+});
+
 test("la soglia è configurabile", () => {
   const entry = { priceEur: 30, ctPriceEur: 20 };
   const result = resolveSyncPrice(entry, product(19.5), {}, options, { priceUpdateThresholdPct: 5 });

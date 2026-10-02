@@ -103,6 +103,7 @@ router.put("/settings", (req, res) => {
     "bestOffer",
     "autoPublishSkip",
     "priceUpdateThresholdPct",
+    "reducedMarkup",
   ];
 
   const patch = {};

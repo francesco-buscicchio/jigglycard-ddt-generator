@@ -318,8 +318,20 @@ function computeRawPriceValue(product, options = {}, override = {}) {
 
   const baseCents = Number(product.price_cents);
   if (!Number.isFinite(baseCents)) return null;
+  const ctEur = baseCents / 100;
   const factor = 1 + (Number(options.markupPercent) || 0) / 100;
-  return Number(((baseCents / 100) * factor).toFixed(2));
+  const standard = ctEur * factor;
+
+  // Ricarico ridotto sopra la soglia (settings.reducedMarkup): mai sotto la
+  // soglia stessa, così il prezzo resta crescente al crescere del valore CT.
+  const reduced = options.reducedMarkup;
+  const threshold = Number(reduced?.thresholdEur);
+  if (reduced && Number.isFinite(threshold) && standard >= threshold) {
+    const reducedPrice = ctEur * (1 + (Number(reduced.markupPercent) || 0) / 100);
+    return Number(Math.max(threshold, reducedPrice).toFixed(2));
+  }
+
+  return Number(standard.toFixed(2));
 }
 
 // Quantità effettiva: eventuale override, comunque mai oltre la disponibilità
@@ -454,6 +466,7 @@ function withDefaultMarkup(options, settings) {
       ? provided
       : Number(settings.markupPercent) || 0,
     rarityFloors: options.rarityFloors ?? settings.rarityFloors ?? DEFAULT_RARITY_FLOORS,
+    reducedMarkup: options.reducedMarkup ?? settings.reducedMarkup ?? null,
   };
 }
 
@@ -479,8 +492,19 @@ function selectFulfillmentPolicyId(priceEur, settings) {
 // ribassi CT. I prezzi fissi (override) si applicano sempre subito.
 const DEFAULT_PRICE_UPDATE_THRESHOLD_PCT = 2;
 
+const PRICE_BLOCK_MS = 7 * 24 * 60 * 60 * 1000;
+
 function resolveSyncPrice(entry, product, override, options, settings) {
   if (!product) return { priceEur: entry.priceEur ?? null, ctBaseEur: entry.ctPriceEur ?? null };
+
+  // Cambio prezzo rifiutato di recente da eBay (vedi priceBlockedAt).
+  if (
+    entry.priceBlockedAt &&
+    Date.now() - Date.parse(entry.priceBlockedAt) < PRICE_BLOCK_MS &&
+    Number.isFinite(Number(entry.priceEur))
+  ) {
+    return { priceEur: Number(entry.priceEur), ctBaseEur: entry.ctPriceEur ?? null };
+  }
 
   const ctNow = Number(product.price_cents) / 100;
   const computed = computePriceValue(product, options, override);
@@ -504,7 +528,17 @@ function resolveSyncPrice(entry, product, override, options, settings) {
   }
 
   const drift = Math.abs(ctNow - base) / base;
-  return drift > threshold
+  if (drift > threshold) return { priceEur: computed, ctBaseEur: ctNow };
+
+  // Regole di prezzo cambiate (ricarico, minimi): il prezzo che le regole
+  // attuali darebbero sulla base CT registrata diverge da quello online.
+  const atBase = computePriceValue(
+    { ...product, price_cents: Math.round(base * 100) },
+    options,
+    override,
+  );
+  const ruleDrift = recorded > 0 ? Math.abs(atBase - recorded) / recorded : 0;
+  return ruleDrift > threshold
     ? { priceEur: computed, ctBaseEur: ctNow }
     : { priceEur: recorded, ctBaseEur: base };
 }
@@ -958,7 +992,13 @@ async function syncQuantities(rawOptions = {}) {
 
   const toBulkUpdate = toUpdate.filter((item) => item.quantity > 0);
   for (let i = 0; i < toBulkUpdate.length; i += 25) {
-    const chunk = toBulkUpdate.slice(i, i + 25);
+    await applyBulkChunk(toBulkUpdate.slice(i, i + 25));
+  }
+
+  // eBay può rifiutare l'intera richiesta (HTTP 400) per un solo articolo
+  // non valido: in quel caso si riprova articolo per articolo, così un'unica
+  // inserzione problematica non blocca l'aggiornamento delle altre.
+  async function applyBulkChunk(chunk) {
     const requests = chunk.map((item) => ({
       sku: item.sku,
       shipToLocationAvailability: { quantity: item.quantity },
@@ -983,10 +1023,20 @@ async function syncQuantities(rawOptions = {}) {
         const outcome = responseBySku.get(item.sku);
         const ok = !outcome || Number(outcome.statusCode) < 300;
         if (!ok) {
+          const errorText = JSON.stringify(outcome.errors ?? []);
+          // Prezzo sotto le soglie della proposta d'acquisto su un'inserzione
+          // non revisionabile (foto piccola): il prezzo resta fermo per un
+          // periodo, la quantità continua ad aggiornarsi.
+          if (/Best Offer Auto Accept|Auto decline amount/i.test(errorText)) {
+            ebayService.recordPublished(item.productId, {
+              priceBlockedAt: new Date().toISOString(),
+              status: "PUBLISHED",
+            });
+          }
           results.push({
             ...item,
             ok: false,
-            error: `HTTP ${outcome.statusCode}: ${JSON.stringify(outcome.errors ?? [])}`,
+            error: `HTTP ${outcome.statusCode}: ${errorText}`,
           });
           continue;
         }
@@ -1001,9 +1051,21 @@ async function syncQuantities(rawOptions = {}) {
         results.push({ ...item, ok: true, soldOut: item.quantity === 0 });
       }
     } catch (error) {
-      for (const item of chunk) {
-        results.push({ ...item, ok: false, error: error.message });
+      if (chunk.length > 1) {
+        for (const item of chunk) {
+          await applyBulkChunk([item]);
+        }
+        return;
       }
+      const [item] = chunk;
+      const errorText = `${error.message} ${JSON.stringify(error.details ?? {})}`;
+      if (/Best Offer Auto Accept|Auto decline amount/i.test(errorText)) {
+        ebayService.recordPublished(item.productId, {
+          priceBlockedAt: new Date().toISOString(),
+          status: "PUBLISHED",
+        });
+      }
+      results.push({ ...item, ok: false, error: error.message });
     }
   }
 
