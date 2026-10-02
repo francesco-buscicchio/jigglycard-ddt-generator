@@ -1,11 +1,19 @@
-version: "3.8"
+version: "3.9"
+
+# Configurazione della VM di produzione (34.60.92.223): la porta 80 della VM
+# arriva al processo node sulla 3010.
 services:
-  sniffer-app:
+  app:
     build: .
-    container_name: sniffer-app
-    restart: always
+    container_name: jigglycard-ddt-generator
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Stato che deve sopravvivere ai rebuild del container: ebay_store.json
+      # e price_snapshot.json (EBAY_STORE_FILE e PRICE_REPORT_SNAPSHOT_FILE
+      # nel .env puntano qui).
+      - ./data:/app/data
+    command: ["node", "server.js"]
     ports:
-      - "3000:3000"
-    environment:
-      - PORT=3000
-      - NODE_ENV=production
+      - "80:3010"

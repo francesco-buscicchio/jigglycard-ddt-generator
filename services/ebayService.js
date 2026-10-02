@@ -5,8 +5,10 @@ const path = require("path");
 // Integrazione eBay (Sell APIs): gestisce OAuth2 utente (authorization code +
 // refresh token) e le chiamate alle API Inventory / Account. I token e le
 // impostazioni vengono persistiti su file locale (ebay_store.json, gitignored).
+// In Docker EBAY_STORE_FILE lo porta nel volume dati, così sopravvive ai rebuild.
 
-const STORE_FILE = path.join(__dirname, "..", "ebay_store.json");
+const STORE_FILE =
+  process.env.EBAY_STORE_FILE || path.join(__dirname, "..", "ebay_store.json");
 
 const ENVIRONMENTS = {
   production: {
