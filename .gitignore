@@ -9,3 +9,5 @@ service-account.json
 ebay_store.json
 .vercel
 .env.prod
+price_snapshot.json
+price_snapshot.json.tmp

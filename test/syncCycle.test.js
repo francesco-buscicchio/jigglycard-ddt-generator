@@ -38,6 +38,28 @@ test("i passi girano in ordine e uno fallito non blocca i successivi", async () 
   assert.equal(outcomes[1].error, "HTTP 502");
 });
 
+test("ogni passo riceve l'esito dei precedenti", async () => {
+  let seen = null;
+  const runCycle = createSyncCycle({
+    log: silentLog,
+    steps: [
+      { name: "prezzi", enabled: true, run: async () => "ok" },
+      { name: "spento", enabled: false, disabledReason: "off", run: async () => {} },
+      { name: "report", enabled: true, run: async ({ outcomes }) => (seen = outcomes) },
+    ],
+  });
+
+  await runCycle();
+
+  assert.deepEqual(
+    seen.map((outcome) => [outcome.step, outcome.status]),
+    [
+      ["prezzi", "ok"],
+      ["spento", "skipped"],
+    ],
+  );
+});
+
 test("un tick durante un ciclo in corso viene saltato", async () => {
   let release;
   const blocker = new Promise((resolve) => {

@@ -5,6 +5,7 @@
 //   2. Vemlora: prodotti del gestionale e catalogo e-commerce, con il sync a
 //      passi del CMS (vedi vemloraSyncService: il CMS gira su Netlify)
 //   3. eBay: vendite, quantità e prezzi (runEbayQuantitySync)
+//   4. report prezzi via email: variazioni rispetto al giro precedente
 //
 // L'ordine conta: Vemlora ed eBay leggono da CardTrader i prezzi appena
 // aggiornati. Un passo fallito non blocca i successivi, perché le giacenze
@@ -23,6 +24,9 @@ const {
   SYNC_CYCLE_TIMEZONE,
   SYNC_CYCLE_ALIGN_PRICES,
   SYNC_CYCLE_ALIGN_WAIT_MS,
+  PRICE_REPORT_TO,
+  PRICE_REPORT_TOP,
+  PRICE_REPORT_SNAPSHOT_FILE,
 } = require("../config/config");
 
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -67,10 +71,31 @@ async function runAlignPricesStep({
   return { taskId: task.id, deduplicated, games: finalTask.result ?? null };
 }
 
+async function loadExpansionNames() {
+  const { createCardTraderService } = require("./cardTraderService");
+  const response = await createCardTraderService({
+    cardTraderToken: CARDTRADER_TOKEN,
+  }).getExpansions();
+  const expansions = Array.isArray(response?.data) ? response.data : [];
+  return new Map(
+    expansions.map((expansion) => [Number(expansion.id), expansion.name ?? expansion.name_en ?? ""]),
+  );
+}
+
 function buildDefaultSteps() {
-  const { createVemloraSync } = require("./vemloraSyncService");
+  const { createVemloraSync, fetchCardTraderExport } = require("./vemloraSyncService");
   const { runEbayQuantitySync } = require("./ebaySyncScheduler");
+  const { createPriceReport } = require("./priceReportService");
+  const { isMailConfigured, sendMail } = require("./mailService");
   const cmsConfigured = Boolean(CMS_URL && CMS_CRON_SECRET);
+
+  // Un solo export per giro, scaricato dopo l'allineamento prezzi: lo usano
+  // Vemlora e il report (che lo scarica da sé se Vemlora è spento o fallito).
+  let exportItems = null;
+  const fetchExportOnce = async () => {
+    exportItems ??= await fetchCardTraderExport();
+    return exportItems;
+  };
 
   return [
     {
@@ -87,7 +112,7 @@ function buildDefaultSteps() {
       disabledReason: cmsConfigured
         ? "CARDTRADER_TOKEN mancante"
         : "CMS_URL o CMS_CRON_SECRET mancanti",
-      run: createVemloraSync(),
+      run: createVemloraSync({ fetchExport: fetchExportOnce }),
     },
     {
       name: "eBay",
@@ -102,6 +127,22 @@ function buildDefaultSteps() {
         }
         return outcome;
       },
+    },
+    {
+      name: "report prezzi",
+      enabled: PRICE_REPORT_TO.length > 0 && isMailConfigured() && Boolean(CARDTRADER_TOKEN),
+      disabledReason: PRICE_REPORT_TO.length
+        ? "SMTP_HOST, SMTP_USER o SMTP_PASS mancanti"
+        : "PRICE_REPORT_TO vuoto",
+      run: createPriceReport({
+        fetchItems: fetchExportOnce,
+        fetchExpansionNames: loadExpansionNames,
+        send: sendMail,
+        snapshotFile: PRICE_REPORT_SNAPSHOT_FILE,
+        recipients: PRICE_REPORT_TO,
+        top: PRICE_REPORT_TOP,
+        timezone: SYNC_CYCLE_TIMEZONE,
+      }),
     },
   ];
 }
@@ -127,7 +168,9 @@ function createSyncCycle({ steps = buildDefaultSteps, log = console } = {}) {
 
         const stepStartedAt = Date.now();
         try {
-          const result = await step.run();
+          // I passi successivi vedono l'esito dei precedenti (il report li
+          // riporta nell'email).
+          const result = await step.run({ outcomes: outcomes.slice() });
           const elapsed = Date.now() - stepStartedAt;
           log.log(`[SYNC-CYCLE] ${step.name}: ok in ${elapsed}ms`);
           outcomes.push({ step: step.name, status: "ok", elapsedMs: elapsed, result });

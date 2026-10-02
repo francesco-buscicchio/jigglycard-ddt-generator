@@ -195,6 +195,26 @@ module.exports = {
   // Attesa massima del task prezzi prima di passare comunque ai passi dopo.
   SYNC_CYCLE_ALIGN_WAIT_MS: numberFromEnv("SYNC_CYCLE_ALIGN_WAIT_MS", 60 * 60 * 1000),
 
+  // Invio email (SMTP Aruba) per il report prezzi a fine ciclo.
+  SMTP_HOST: String(process.env.SMTP_HOST || "").trim(),
+  SMTP_PORT: positiveIntegerFromEnv("SMTP_PORT", 465),
+  SMTP_SECURE: process.env.SMTP_SECURE !== "false",
+  SMTP_USER: String(process.env.SMTP_USER || "").trim(),
+  SMTP_PASS: String(process.env.SMTP_PASS || "").trim(),
+  MAIL_FROM: String(process.env.MAIL_FROM || "").trim(),
+  // Destinatari del report prezzi, separati da virgola. Vuoto: niente report.
+  PRICE_REPORT_TO: String(process.env.PRICE_REPORT_TO || "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean),
+  // Quante carte elencare per i rialzi e per i ribassi.
+  PRICE_REPORT_TOP: positiveIntegerFromEnv("PRICE_REPORT_TOP", 20),
+  // Fotografia prezzi del giro precedente: va conservata tra un deploy e
+  // l'altro, come ebay_store.json.
+  PRICE_REPORT_SNAPSHOT_FILE:
+    process.env.PRICE_REPORT_SNAPSHOT_FILE ||
+    require("path").join(__dirname, "..", "price_snapshot.json"),
+
   PROCESSED_ORDERS_FILE: "processed_orders.txt",
   DDT_NUMBER_FILE: "ddt_number.txt",
   TEMPLATE_FILE: "./template.xlsx",

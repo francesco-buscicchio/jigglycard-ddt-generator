@@ -155,4 +155,4 @@ function createVemloraSync({
   };
 }
 
-module.exports = { createVemloraSync, groupByBlueprint };
+module.exports = { createVemloraSync, groupByBlueprint, fetchCardTraderExport };
