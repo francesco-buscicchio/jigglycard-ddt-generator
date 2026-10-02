@@ -22,10 +22,12 @@ const {
 // Evita sovrapposizioni: se un job precedente è ancora in corso, salta il tick.
 const running = new Set();
 
+// Restituisce l'esito ({ ok, result } oppure { ok: false, error }) per chi
+// concatena più chiamate, come il ciclo di sincronizzazione.
 async function callCmsCronTask(path, label) {
   if (running.has(label)) {
     console.warn(`[CMS-CRON] ${label}: run precedente ancora in corso, salto.`);
-    return;
+    return { ok: false, skipped: true, error: "run precedente ancora in corso" };
   }
   running.add(label);
   const startedAt = Date.now();
@@ -39,10 +41,9 @@ async function callCmsCronTask(path, label) {
       },
     );
     const elapsed = Date.now() - startedAt;
-    console.log(
-      `[CMS-CRON] ${label}: ok in ${elapsed}ms |`,
-      JSON.stringify(response.data?.result ?? response.data ?? {}),
-    );
+    const result = response.data?.result ?? response.data ?? {};
+    console.log(`[CMS-CRON] ${label}: ok in ${elapsed}ms |`, JSON.stringify(result));
+    return { ok: true, result };
   } catch (error) {
     const status = error?.response?.status;
     const detail =
@@ -53,6 +54,7 @@ async function callCmsCronTask(path, label) {
     console.error(
       `[CMS-CRON] ${label}: FALLITO${status ? ` (HTTP ${status})` : ""}: ${detail}`,
     );
+    return { ok: false, error: `${status ? `HTTP ${status}: ` : ""}${detail}` };
   } finally {
     running.delete(label);
   }

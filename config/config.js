@@ -183,6 +183,18 @@ module.exports = {
   EBAY_SYNC_TIMEZONE:
     process.env.EBAY_SYNC_TIMEZONE || process.env.CMS_CRON_TIMEZONE || "Europe/Rome",
 
+  // Ciclo di sincronizzazione prezzi CardTrader -> Vemlora -> eBay (vedi
+  // services/syncCycleScheduler.js). Opt-in esplicito perché aggiorna prezzi
+  // reali; quando è attivo sostituisce lo scheduler eBay autonomo.
+  SYNC_CYCLE_ENABLED: process.env.SYNC_CYCLE_ENABLED === "true",
+  SYNC_CYCLE_CRON: process.env.SYNC_CYCLE_CRON || "*/30 * * * *",
+  SYNC_CYCLE_TIMEZONE:
+    process.env.SYNC_CYCLE_TIMEZONE || process.env.CMS_CRON_TIMEZONE || "Europe/Rome",
+  // Con false il ciclo salta l'allineamento prezzi e fa solo Vemlora + eBay.
+  SYNC_CYCLE_ALIGN_PRICES: process.env.SYNC_CYCLE_ALIGN_PRICES !== "false",
+  // Attesa massima del task prezzi prima di passare comunque ai passi dopo.
+  SYNC_CYCLE_ALIGN_WAIT_MS: numberFromEnv("SYNC_CYCLE_ALIGN_WAIT_MS", 60 * 60 * 1000),
+
   PROCESSED_ORDERS_FILE: "processed_orders.txt",
   DDT_NUMBER_FILE: "ddt_number.txt",
   TEMPLATE_FILE: "./template.xlsx",

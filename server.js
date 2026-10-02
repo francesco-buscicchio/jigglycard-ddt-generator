@@ -6,6 +6,7 @@ const {
   TASK_PERSISTENCE_ENABLED,
   TASK_PERSISTENCE_MONGO_URI,
   PDF_ARTIFACT_TTL_MS,
+  SYNC_CYCLE_ENABLED,
 } = require("./config/config");
 const originGate = require("./middleware/originGate");
 const apiAuth = require("./middleware/apiAuth");
@@ -13,6 +14,7 @@ const requestContext = require("./middleware/requestContext");
 const requestQueue = require("./services/requestQueue");
 const { startCmsCronScheduler } = require("./services/cmsCronScheduler");
 const { startEbaySyncScheduler } = require("./services/ebaySyncScheduler");
+const { startSyncCycleScheduler } = require("./services/syncCycleScheduler");
 const { MongoTaskStore } = require("./services/taskStore");
 const { pruneExpiredArtifacts } = require("./services/excelConversionService");
 const cardtraderRoutes = require("./routes/cardtrader");
@@ -155,7 +157,9 @@ function startServer() {
   const app = createApp();
   const retentionTimer = startArtifactRetention();
   const cmsCronJobs = startCmsCronScheduler();
-  const ebaySyncJobs = startEbaySyncScheduler();
+  const syncCycleJobs = startSyncCycleScheduler();
+  // Con il ciclo attivo eBay ne è l'ultimo passo: niente scheduler autonomo.
+  const ebaySyncJobs = SYNC_CYCLE_ENABLED ? [] : startEbaySyncScheduler();
 
   initQueuePersistence().finally(() => {
     requestQueue.startScheduler();
@@ -179,6 +183,7 @@ function startServer() {
     requestQueue.stopScheduler();
     clearInterval(retentionTimer);
     cmsCronJobs.forEach((job) => job.stop());
+    syncCycleJobs.forEach((job) => job.stop());
     ebaySyncJobs.forEach((job) => job.stop());
   });
 

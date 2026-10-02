@@ -10,7 +10,10 @@ const {
   ALIGN_PRICE_TRACK_INVENTORY,
 } = require("../config/config");
 const { createCardTraderService } = require("./cardTraderService");
-const { syncCardTraderInventory } = require("./priceTrackingService");
+const {
+  syncCardTraderInventory,
+  getCardTraderReferencePrices,
+} = require("./priceTrackingService");
 const { sleep, throwIfAborted, isAbortError } = require("../utils/abort");
 
 const ABORT_MESSAGE = "Allineamento prezzi annullato.";
@@ -51,6 +54,12 @@ const CONDITION_PERCENT_RULES = {
 // aumentato del 1000% (cioe' 11 volte il prezzo attuale).
 const PRICE_INCREASE_CAP_THRESHOLD_CENTS = 10000;
 const MAX_PRICE_INCREASE_FACTOR = 11;
+// Un concorrente che chiede piu' di max(riferimento x 5, riferimento + 5 EUR)
+// e' considerato un prezzo segnaposto (es. 99,99 EUR su una carta da 0,40) e
+// viene ignorato. Il riferimento e' il prezzo di carico registrato nel
+// tracking (o il prezzo attuale, se piu' alto e non a sua volta fuori scala).
+const PLACEHOLDER_PRICE_FACTOR = 5;
+const PLACEHOLDER_MIN_GAP_CENTS = 500;
 const GAME_CONFIGS = {
   pokemon: {
     slug: "pokemon",
@@ -100,6 +109,39 @@ const GAME_CONFIGS = {
     minAllowedPriceCents: () => 0,
   },
 };
+
+function maxSanePriceCents(referenceCents) {
+  return Math.max(
+    referenceCents * PLACEHOLDER_PRICE_FACTOR,
+    referenceCents + PLACEHOLDER_MIN_GAP_CENTS,
+  );
+}
+
+// Restituisce il riferimento per riconoscere i prezzi segnaposto:
+// - maxSaneCents: sopra questo prezzo un listing e' fuori scala;
+// - restoreCents: prezzo di carico da ripristinare se il nostro prezzo
+//   attuale e' gia' fuori scala (null se non serve o non e' noto).
+function resolvePriceReference(myPriceCents, initialPriceCents) {
+  const hasMyPrice = Number.isFinite(myPriceCents) && myPriceCents > 0;
+  const hasInitial =
+    Number.isFinite(initialPriceCents) && initialPriceCents > 0;
+  if (!hasInitial) {
+    return hasMyPrice
+      ? { maxSaneCents: maxSanePriceCents(myPriceCents), restoreCents: null }
+      : { maxSaneCents: null, restoreCents: null };
+  }
+  const initialMax = maxSanePriceCents(initialPriceCents);
+  if (hasMyPrice && myPriceCents > initialMax) {
+    return { maxSaneCents: initialMax, restoreCents: initialPriceCents };
+  }
+  const referenceCents = hasMyPrice
+    ? Math.max(initialPriceCents, myPriceCents)
+    : initialPriceCents;
+  return {
+    maxSaneCents: maxSanePriceCents(referenceCents),
+    restoreCents: null,
+  };
+}
 
 function feeCentsFromPrice(priceCents) {
   const price = priceCents / 100;
@@ -473,7 +515,7 @@ async function trackInventoryExport(
   try {
     const result = await syncCardTraderInventory(runtimeConfig, {
       products,
-      cardTraderService,
+      cardTraderService: cardtraderService,
       source: "align-price",
     });
     const seconds = Math.round((Date.now() - startedAt) / 1000);
@@ -522,6 +564,18 @@ async function alignPricesForGame(
   );
   const totalItems = myItems.length;
   const rows = [];
+  // Prezzi di carico dal tracking: se Mongo non risponde si allinea lo
+  // stesso, usando il prezzo attuale come riferimento.
+  let referencePrices = new Map();
+  try {
+    referencePrices = await getCardTraderReferencePrices(runtimeConfig);
+  } catch (error) {
+    console.warn(
+      `[ALIGN-PRICE][${gameConfig.slug}] Prezzi di carico non disponibili (${error.message}): uso il prezzo attuale come riferimento`,
+    );
+  }
+  let ignoredPlaceholderListings = 0;
+  let restoredPrices = 0;
   let checkedItems = 0;
   let processingStartedAt = null;
 
@@ -760,11 +814,41 @@ async function alignPricesForGame(
       const myListing =
         listings.find((listing) => listing?.user?.username === MY_USERNAME) ||
         null;
-      const competitors = listings.filter(
-        (listing) => listing?.user?.username !== MY_USERNAME,
+      const { maxSaneCents, restoreCents } = resolvePriceReference(
+        myPriceCents,
+        referencePrices.get(String(item?.id)),
       );
+      const competitors = listings.filter((listing) => {
+        if (listing?.user?.username === MY_USERNAME) return false;
+        if (
+          maxSaneCents !== null &&
+          netPriceCents(listing.price_cents) > maxSaneCents
+        ) {
+          ignoredPlaceholderListings += 1;
+          return false;
+        }
+        return true;
+      });
 
-      if (competitors.length === 0) return;
+      // Nessun concorrente utilizzabile (solo prezzi segnaposto): se siamo
+      // finiti fuori scala torniamo al prezzo di carico, altrimenti il
+      // prezzo resta com'e'.
+      const restoreReferencePrice = () => {
+        if (restoreCents === null) return;
+        const restoredCents = Math.max(
+          restoreCents,
+          gameConfig.minAllowedPriceCents(item),
+        );
+        if (restoredCents !== myPriceCents) {
+          restoredPrices += 1;
+          queuePriceUpdate(item.id, restoredCents);
+        }
+      };
+
+      if (competitors.length === 0) {
+        restoreReferencePrice();
+        return;
+      }
 
       const itemCondition = getCondition(item?.properties_hash?.condition);
       // Listings ordinati per prezzo crescente: il primo di ogni condizione
@@ -802,7 +886,10 @@ async function alignPricesForGame(
         });
       }
 
-      if (candidates.length === 0) return;
+      if (candidates.length === 0) {
+        restoreReferencePrice();
+        return;
+      }
 
       const bestCandidate = candidates.reduce((best, candidate) =>
         candidate.cents < best.cents ? candidate : best,
@@ -950,6 +1037,9 @@ async function alignPricesForGame(
   );
   fs.writeFileSync(outPath, lines.join("\n"), "utf8");
   console.log(`[ALIGN-PRICE][${gameConfig.slug}] CSV scritto in ${outPath}`);
+  console.log(
+    `[ALIGN-PRICE][${gameConfig.slug}] Prezzi segnaposto ignorati=${ignoredPlaceholderListings} | prezzi ripristinati al carico=${restoredPrices}`,
+  );
 
   return { totalItems, rows: rows.length, outPath };
 }
@@ -998,3 +1088,5 @@ exports.alignPrices = async (runtimeConfig = {}) => {
   );
   return results;
 };
+
+exports.resolvePriceReference = resolvePriceReference;

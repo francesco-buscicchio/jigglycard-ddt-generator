@@ -8,3 +8,4 @@ processed_orders.txt
 service-account.json
 ebay_store.json
 .vercel
+.env.prod

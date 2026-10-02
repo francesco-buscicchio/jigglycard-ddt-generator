@@ -3,12 +3,14 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 const clientsCache = new Map();
 
 function resolveDbConfig(options = {}) {
+  // || e non ??: gli header assenti arrivano come stringa vuota e non devono
+  // nascondere la configurazione del .env.
   const mongoUri =
-    options.mongoUri ??
-    options.mongodbUri ??
-    process.env.MONGODB_URI ??
+    options.mongoUri ||
+    options.mongodbUri ||
+    process.env.MONGODB_URI ||
     process.env.MONGO_URI;
-  const dbName = options.dbName ?? process.env.DB_NAME ?? "CMS";
+  const dbName = options.dbName || process.env.DB_NAME || "CMS";
 
   if (!mongoUri) {
     throw new Error(

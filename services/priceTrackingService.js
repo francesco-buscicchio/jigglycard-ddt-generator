@@ -648,6 +648,28 @@ async function syncCardTraderInventory(options = {}, provided = {}) {
   };
 }
 
+// Prezzo di carico per prodotto CardTrader (productId -> centesimi): usato
+// dall'allineamento prezzi come riferimento per riconoscere i prezzi
+// segnaposto dei concorrenti e ripristinare le carte finite fuori mercato.
+async function getCardTraderReferencePrices(options = {}, provided = {}) {
+  const db = provided.db ?? (await getDB(options));
+  const items = await db
+    .collection(ITEMS_COLLECTION)
+    .find(
+      { platform: PLATFORM_CARDTRADER, productId: { $ne: null } },
+      { projection: { productId: 1, initialPriceCents: 1 } },
+    )
+    .toArray();
+  const prices = new Map();
+  for (const item of items) {
+    const cents = Number(item.initialPriceCents);
+    if (Number.isFinite(cents) && cents > 0) {
+      prices.set(String(item.productId), cents);
+    }
+  }
+  return prices;
+}
+
 // Sincronizza CardTrader: snapshot inventario (per i prezzi di carico) e
 // ordini da venditore (vendite reali con prezzo esatto). Le vendite NON
 // vengono dedotte dai cali di quantita per evitare doppi conteggi.
@@ -836,5 +858,6 @@ module.exports = {
   importCardmarketSnapshot,
   syncCardTraderInventory,
   syncCardTrader,
+  getCardTraderReferencePrices,
   loadReportData,
 };
