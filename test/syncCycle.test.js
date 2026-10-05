@@ -126,3 +126,24 @@ test("oltre l'attesa massima il ciclo prosegue senza aspettare il task", async (
     /ancora running/,
   );
 });
+
+test("un allineamento vecchio gia' concluso non viene riusato: ne parte uno nuovo", async () => {
+  const enqueued = [];
+  const queue = {
+    enqueueTask(input) {
+      enqueued.push(input);
+      return input.forceNew
+        ? { task: { id: "task-200", status: "queued" }, deduplicated: false }
+        : { task: { id: "task-166", status: "completed" }, deduplicated: true };
+    },
+    getTask(id) {
+      return { id, status: "completed", result: [{ totalItems: 9 }] };
+    },
+  };
+
+  const outcome = await runAlignPricesStep({ queue, token: "tok", pollMs: 1, maxWaitMs: 1_000 });
+
+  assert.equal(enqueued.length, 2);
+  assert.equal(enqueued[1].forceNew, true);
+  assert.deepEqual(outcome, { taskId: "task-200", deduplicated: false, games: [{ totalItems: 9 }] });
+});

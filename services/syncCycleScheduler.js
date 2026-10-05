@@ -53,11 +53,18 @@ async function runAlignPricesStep({
   pollMs = TASK_POLL_MS,
   maxWaitMs = SYNC_CYCLE_ALIGN_WAIT_MS,
 } = {}) {
-  const { task, deduplicated } = queue.enqueueTask({
+  const taskInput = {
     taskType: "cardtrader.align-prices",
     sourceEndpoint: "sync-cycle",
     requestEnv: { cardTraderToken: token },
-  });
+  };
+  let { task, deduplicated } = queue.enqueueTask(taskInput);
+  // La deduplica della coda restituisce anche task gia' conclusi (la chiave
+  // resta indicizzata finche' il task e' in cronologia): in quel caso il
+  // ciclo riceverebbe sempre lo stesso allineamento vecchio senza rieseguirlo.
+  if (deduplicated && TERMINAL_TASK_STATUSES.has(task.status)) {
+    ({ task, deduplicated } = queue.enqueueTask({ ...taskInput, forceNew: true }));
+  }
   const finalTask = await waitForTask(queue, task.id, { pollMs, maxWaitMs });
   const status = finalTask?.status ?? "unknown";
 
