@@ -576,8 +576,6 @@ async function alignPricesForGame(
   }
   let ignoredPlaceholderListings = 0;
   let restoredPrices = 0;
-  let checkedItems = 0;
-  let processingStartedAt = null;
 
   // Un gruppo per espansione: il marketplace si scarica una volta sola per
   // espansione (e solo nelle lingue che teniamo davvero a magazzino), si
@@ -768,33 +766,6 @@ async function alignPricesForGame(
     return pending;
   }
 
-  function reportProgress() {
-    checkedItems += 1;
-    if (checkedItems % 50 !== 0 && checkedItems !== totalItems) return;
-
-    const startedAt = processingStartedAt ?? Date.now();
-    const elapsedSeconds = Math.max(
-      1,
-      Math.round((Date.now() - startedAt) / 1000),
-    );
-    const itemsPerSecond = checkedItems / elapsedSeconds;
-    const remainingItems = Math.max(0, totalItems - checkedItems);
-    const etaSeconds =
-      itemsPerSecond > 0 ? Math.round(remainingItems / itemsPerSecond) : null;
-    const rateText = itemsPerSecond.toFixed(2).replace(".", ",");
-    const etaText =
-      etaSeconds === null
-        ? "n/a"
-        : `${Math.floor(etaSeconds / 60)}m ${String(etaSeconds % 60).padStart(
-            2,
-            "0",
-          )}s`;
-
-    console.log(
-      `[ALIGN-PRICE][${gameConfig.slug}] ${checkedItems}/${totalItems} prezzi controllati | speed: ${rateText} item/s | eta: ${etaText}`,
-    );
-  }
-
   function processItem(item, cachedListings) {
     const blueprintId = item?.blueprint_id;
     if (!blueprintId) return;
@@ -940,11 +911,9 @@ async function alignPricesForGame(
     for (const item of group.items) {
       const blueprintId = Number(item?.blueprint_id);
       processItem(item, listingsByBlueprint.get(blueprintId) ?? []);
-      reportProgress();
     }
   }
 
-  processingStartedAt = Date.now();
   console.log(
     `[ALIGN-PRICE][${gameConfig.slug}] Export completato in ${exportDurationSeconds}s | items=${totalItems} | expansions=${groupList.length} | prefetch=${expansionConcurrency} | lingue=${
       ALIGN_PRICE_LANGUAGE_FILTER ? "filtrate" : "tutte"
@@ -965,7 +934,6 @@ async function alignPricesForGame(
 
     if (error) {
       if (isAbortError(error)) throw error;
-      checkedItems += group.items.length;
       continue;
     }
 
@@ -976,10 +944,7 @@ async function alignPricesForGame(
   for (const item of itemsWithoutExpansion) {
     throwIfAborted(taskSignal, ABORT_MESSAGE);
     const blueprintId = Number(item?.blueprint_id);
-    if (!Number.isFinite(blueprintId)) {
-      reportProgress();
-      continue;
-    }
+    if (!Number.isFinite(blueprintId)) continue;
 
     try {
       const response = await cardtraderService.getProduct(blueprintId);
@@ -992,7 +957,6 @@ async function alignPricesForGame(
     } catch (error) {
       if (isAbortError(error)) throw error;
     }
-    reportProgress();
   }
 
   await flushPriceUpdates(true);
