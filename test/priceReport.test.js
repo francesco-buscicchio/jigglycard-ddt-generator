@@ -7,6 +7,7 @@ const {
   buildPriceSnapshot,
   comparePriceSnapshots,
   renderPriceReport,
+  nextReportAt,
   createPriceReport,
 } = require("../services/priceReportService");
 
@@ -129,4 +130,50 @@ test("se l'invio fallisce la fotografia precedente resta, il giro dopo la copre"
   // Variazione cumulata dal 10 € del giro riuscito precedente.
   assert.equal(result.valueDeltaCents, 300);
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).items[1].priceCents, 1300);
+});
+
+test("le scadenze del report cadono su multipli fissi dell'intervallo", () => {
+  const twoHours = 2 * 60 * 60 * 1000;
+  assert.equal(nextReportAt("2026-10-15T08:05:30Z", twoHours).toISOString(), "2026-10-15T10:00:00.000Z");
+  assert.equal(nextReportAt("2026-10-15T09:59:00Z", twoHours).toISOString(), "2026-10-15T10:00:00.000Z");
+  assert.equal(nextReportAt("2026-10-15T08:05:30Z", 0), null);
+  assert.equal(nextReportAt(undefined, twoHours), null);
+});
+
+test("ogni due ore: i giri in mezzo saltano e il confronto è con l'ultimo invio", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "price-report-")), "snapshot.json");
+  let clock = new Date("2026-10-15T08:05:00Z");
+  let items = [listing(1, 1000, 1)];
+  const sent = [];
+  const report = createPriceReport({
+    fetchItems: async () => items,
+    send: async (message) => sent.push(message),
+    snapshotFile: file,
+    recipients: ["a@example.com"],
+    intervalMs: 2 * 60 * 60 * 1000,
+    now: () => clock,
+  });
+
+  // Nessun invio precedente: il report è dovuto subito.
+  assert.equal(report.skipReason(), null);
+  await report();
+
+  // Giri delle 08:35, 09:05, 09:35: report saltato, fotografia intatta
+  // anche se nel frattempo i prezzi cambiano.
+  for (const time of ["08:35", "09:05", "09:35"]) {
+    clock = new Date(`2026-10-15T${time}:00Z`);
+    items = [listing(1, 1000 + Number(time.slice(3)), 1)];
+    assert.match(report.skipReason(), /prossimo dopo le/);
+  }
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).takenAt, "2026-10-15T08:05:00.000Z");
+
+  clock = new Date("2026-10-15T10:05:00Z");
+  items = [listing(1, 1250, 1)];
+  assert.equal(report.skipReason(), null);
+  const result = await report();
+
+  // Variazione dal report delle 08:05 (10 €), non dal giro delle 09:35.
+  assert.equal(result.valueDeltaCents, 250);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].html, /rispetto al report del 15\/10\/2026, 10:05/);
 });

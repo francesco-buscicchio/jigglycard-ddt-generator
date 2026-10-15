@@ -5,7 +5,8 @@
 //   2. Vemlora: prodotti del gestionale e catalogo e-commerce, con il sync a
 //      passi del CMS (vedi vemloraSyncService: il CMS gira su Netlify)
 //   3. eBay: vendite, quantità e prezzi (runEbayQuantitySync)
-//   4. report prezzi via email: variazioni rispetto al giro precedente
+//   4. report prezzi via email, ogni PRICE_REPORT_INTERVAL_MINUTES: variazioni
+//      rispetto all'ultimo report inviato (nei giri in mezzo viene saltato)
 //
 // L'ordine conta: Vemlora ed eBay leggono da CardTrader i prezzi appena
 // aggiornati. Un passo fallito non blocca i successivi, perché le giacenze
@@ -26,6 +27,7 @@ const {
   SYNC_CYCLE_ALIGN_WAIT_MS,
   PRICE_REPORT_TO,
   PRICE_REPORT_TOP,
+  PRICE_REPORT_INTERVAL_MINUTES,
   PRICE_REPORT_SNAPSHOT_FILE,
 } = require("../config/config");
 
@@ -104,6 +106,17 @@ function buildDefaultSteps() {
     return exportItems;
   };
 
+  const priceReport = createPriceReport({
+    fetchItems: fetchExportOnce,
+    fetchExpansionNames: loadExpansionNames,
+    send: sendMail,
+    snapshotFile: PRICE_REPORT_SNAPSHOT_FILE,
+    recipients: PRICE_REPORT_TO,
+    top: PRICE_REPORT_TOP,
+    intervalMs: PRICE_REPORT_INTERVAL_MINUTES * 60_000,
+    timezone: SYNC_CYCLE_TIMEZONE,
+  });
+
   return [
     {
       name: "prezzi CardTrader",
@@ -141,15 +154,8 @@ function buildDefaultSteps() {
       disabledReason: PRICE_REPORT_TO.length
         ? "SMTP_HOST, SMTP_USER o SMTP_PASS mancanti"
         : "PRICE_REPORT_TO vuoto",
-      run: createPriceReport({
-        fetchItems: fetchExportOnce,
-        fetchExpansionNames: loadExpansionNames,
-        send: sendMail,
-        snapshotFile: PRICE_REPORT_SNAPSHOT_FILE,
-        recipients: PRICE_REPORT_TO,
-        top: PRICE_REPORT_TOP,
-        timezone: SYNC_CYCLE_TIMEZONE,
-      }),
+      skipReason: priceReport.skipReason,
+      run: priceReport,
     },
   ];
 }
@@ -175,6 +181,14 @@ function createSyncCycle({ steps = buildDefaultSteps, log = console } = {}) {
 
         const stepStartedAt = Date.now();
         try {
+          // Passo attivo ma non dovuto in questo giro (il report fuori orario).
+          const skipReason = step.skipReason?.();
+          if (skipReason) {
+            log.log(`[SYNC-CYCLE] ${step.name}: saltato (${skipReason})`);
+            outcomes.push({ step: step.name, status: "skipped", reason: skipReason });
+            continue;
+          }
+
           // I passi successivi vedono l'esito dei precedenti (il report li
           // riporta nell'email).
           const result = await step.run({ outcomes: outcomes.slice() });

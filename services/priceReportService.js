@@ -1,10 +1,11 @@
 // Report prezzi a fine ciclo di sincronizzazione: confronta l'inventario
-// CardTrader appena aggiornato con la fotografia del giro precedente e manda
-// per email le carte con le variazioni di prezzo maggiori e quanto è cambiato
-// il valore totale (prezzo x quantità).
+// CardTrader appena aggiornato con la fotografia dell'ultimo report inviato e
+// manda per email le carte con le variazioni di prezzo maggiori e quanto è
+// cambiato il valore totale (prezzo x quantità).
 //
-// La fotografia si salva solo dopo un invio riuscito: se l'email fallisce, il
-// report successivo copre anche questo giro invece di perderlo.
+// La fotografia si salva solo dopo un invio riuscito: i giri senza report e
+// quelli con l'email fallita non la toccano, quindi il report successivo
+// copre tutto il periodo dall'ultimo invio.
 const fs = require("fs");
 const path = require("path");
 
@@ -225,7 +226,7 @@ const factsBlock = (facts) => `
 
 function renderChangesSection(title, changes, expansionNames) {
   if (!changes.length) {
-    return `${sectionTitle(title)}<tr><td style="padding:0 24px;color:${COLORS.muted};font-size:14px">Nessuna variazione in questo giro.</td></tr>`;
+    return `${sectionTitle(title)}<tr><td style="padding:0 24px;color:${COLORS.muted};font-size:14px">Nessuna variazione dall'ultimo report.</td></tr>`;
   }
 
   const rows = changes
@@ -273,7 +274,7 @@ function renderOutcomes(outcomes) {
       </tr>`,
     )
     .join("");
-  return `${sectionTitle("Esito del giro")}
+  return `${sectionTitle("Esito dell'ultimo giro")}
     <tr><td style="padding:0 24px"><table role="presentation" cellpadding="0" cellspacing="0">${items}</table></td></tr>`;
 }
 
@@ -293,7 +294,8 @@ function renderLayout({ preheader, title, subtitle, body }) {
         ${body}
         <tr><td style="height:24px"></td></tr>
         <tr><td style="padding:18px 24px 22px;font-size:12px;line-height:1.5;color:${COLORS.muted};border-top:1px solid ${COLORS.line}">
-          Email automatica del ciclo di sincronizzazione CardTrader → Vemlora → eBay (ogni 30 minuti).
+          Email automatica del ciclo di sincronizzazione CardTrader → Vemlora → eBay.
+          Le variazioni sono rispetto all'ultimo report inviato.
           Il valore inventario è la somma di prezzo × quantità delle inserzioni CardTrader.
         </td></tr>
       </table>
@@ -316,9 +318,9 @@ function renderPriceReport({
     const subject = `Sync CardTrader ${when}: prima fotografia prezzi`;
     const text = [
       `Prima fotografia dei prezzi CardTrader: ${report.listings} inserzioni, valore ${euro(report.valueAfterCents)}.`,
-      "Dal prossimo giro questa email elencherà le variazioni di prezzo.",
+      "Dal prossimo report questa email elencherà le variazioni di prezzo.",
       "",
-      "Esito del giro:",
+      "Esito dell'ultimo giro:",
       ...outcomeLines,
     ].join("\n");
     const html = renderLayout({
@@ -330,7 +332,7 @@ function renderPriceReport({
         value: euro(report.valueAfterCents),
         detail: `${report.listings.toLocaleString("it-IT")} inserzioni su CardTrader`,
       })}
-        <tr><td style="padding:16px 24px 0;font-size:14px;line-height:1.5;color:${COLORS.ink}">Dal prossimo giro questa email elencherà le carte con le variazioni di prezzo maggiori.</td></tr>
+        <tr><td style="padding:16px 24px 0;font-size:14px;line-height:1.5;color:${COLORS.ink}">Dal prossimo report questa email elencherà le carte con le variazioni di prezzo maggiori.</td></tr>
         ${renderOutcomes(outcomes)}`,
     });
     return { subject, html, text };
@@ -366,7 +368,7 @@ function renderPriceReport({
     "Ribassi maggiori:",
     ...(report.topDecreases.length ? report.topDecreases.map(describe) : ["nessuno"]),
     "",
-    "Esito del giro:",
+    "Esito dell'ultimo giro:",
     ...outcomeLines,
   ].join("\n");
 
@@ -376,7 +378,7 @@ function renderPriceReport({
   const html = renderLayout({
     preheader: `${report.changed} prezzi cambiati · valore ${signedEuro(report.valueDeltaCents)} (${signedPct(report.valueDeltaPct)})`,
     title: `${report.changed} prezzi cambiati`,
-    subtitle: `${when} · rispetto al giro del ${since}`,
+    subtitle: `${when} · rispetto al report del ${since}`,
     body: `${heroBlock({
       label: "Valore inventario",
       value: euro(report.valueAfterCents),
@@ -420,6 +422,15 @@ function saveSnapshot(file, snapshot) {
   fs.renameSync(temporary, file);
 }
 
+// Le scadenze cadono su multipli fissi dell'intervallo (contati in UTC): il
+// report parte al primo giro dopo la scadenza, e un giro più lento del solito
+// non fa slittare quelli dopo.
+function nextReportAt(lastTakenAt, intervalMs) {
+  const last = Date.parse(lastTakenAt);
+  if (!intervalMs || !Number.isFinite(last)) return null;
+  return new Date(Math.floor(last / intervalMs) * intervalMs + intervalMs);
+}
+
 function createPriceReport({
   fetchItems,
   fetchExpansionNames = async () => new Map(),
@@ -427,10 +438,23 @@ function createPriceReport({
   snapshotFile,
   recipients,
   top = 20,
+  intervalMs = 0,
   timezone = DEFAULT_TIMEZONE,
   now = () => new Date(),
 }) {
-  return async function sendPriceReport({ outcomes = [] } = {}) {
+  // Il ciclo lo chiede prima di eseguire il passo: null se il report è dovuto
+  // (o non c'è ancora un invio precedente), altrimenti il motivo del salto.
+  const skipReason = () => {
+    const previous = loadSnapshot(snapshotFile);
+    const dueAt = previous ? nextReportAt(previous.takenAt, intervalMs) : null;
+    if (!dueAt || now() >= dueAt) return null;
+    return (
+      `ultimo report del ${formatDate(previous.takenAt, timezone)}, ` +
+      `il prossimo dopo le ${formatDate(dueAt, timezone)}`
+    );
+  };
+
+  async function sendPriceReport({ outcomes = [] } = {}) {
     const takenAt = now();
     const current = buildPriceSnapshot(await fetchItems(), takenAt);
     const report = comparePriceSnapshots(loadSnapshot(snapshotFile), current, { top });
@@ -451,13 +475,17 @@ function createPriceReport({
           decreased: report.decreased,
           valueDeltaCents: report.valueDeltaCents,
         };
-  };
+  }
+
+  sendPriceReport.skipReason = skipReason;
+  return sendPriceReport;
 }
 
 module.exports = {
   buildPriceSnapshot,
   comparePriceSnapshots,
   renderPriceReport,
+  nextReportAt,
   createPriceReport,
   loadSnapshot,
   saveSnapshot,

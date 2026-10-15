@@ -211,8 +211,11 @@ module.exports = {
     .filter(Boolean),
   // Quante carte elencare per i rialzi e per i ribassi.
   PRICE_REPORT_TOP: positiveIntegerFromEnv("PRICE_REPORT_TOP", 20),
-  // Fotografia prezzi del giro precedente: va conservata tra un deploy e
-  // l'altro, come ebay_store.json.
+  // Ogni quanti minuti parte il report: il ciclo gira più spesso, e nei giri
+  // in mezzo il passo report viene saltato.
+  PRICE_REPORT_INTERVAL_MINUTES: positiveIntegerFromEnv("PRICE_REPORT_INTERVAL_MINUTES", 120),
+  // Fotografia prezzi dell'ultimo report inviato: va conservata tra un deploy
+  // e l'altro, come ebay_store.json.
   PRICE_REPORT_SNAPSHOT_FILE:
     process.env.PRICE_REPORT_SNAPSHOT_FILE ||
     require("path").join(__dirname, "..", "price_snapshot.json"),

@@ -60,6 +60,31 @@ test("ogni passo riceve l'esito dei precedenti", async () => {
   );
 });
 
+test("un passo attivo ma non dovuto viene saltato con il motivo", async () => {
+  let runs = 0;
+  let due = false;
+  const runCycle = createSyncCycle({
+    log: silentLog,
+    steps: [
+      {
+        name: "report",
+        enabled: true,
+        skipReason: () => (due ? null : "prossimo dopo le 12:00"),
+        run: async () => (runs += 1),
+      },
+    ],
+  });
+
+  const skipped = await runCycle();
+  assert.equal(runs, 0);
+  assert.deepEqual(skipped, [{ step: "report", status: "skipped", reason: "prossimo dopo le 12:00" }]);
+
+  due = true;
+  const ran = await runCycle();
+  assert.equal(runs, 1);
+  assert.equal(ran[0].status, "ok");
+});
+
 test("un tick durante un ciclo in corso viene saltato", async () => {
   let release;
   const blocker = new Promise((resolve) => {
